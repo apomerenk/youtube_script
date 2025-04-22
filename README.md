@@ -1,5 +1,9 @@
-To be used with zapier
+To be used with zapier.
 https://zapier.com/app/assets/zaps
+This script automatically:
+- checks the input playlist and builds up set of video ids
+- looks at all subscribed channels and pulls non-shorts videos they published in the last x days
+- if the video isn't already in the playlist, adds it
 
 steps
 1. set up a zap
