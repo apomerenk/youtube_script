@@ -41,7 +41,18 @@ export async function manageYouTubeSubscriptionsAndPlaylist({ playlistId }: { pl
         const playlistResponse = await fetchWithZapier(playlistUrl);
         await playlistResponse.throwErrorIfNotOk();
 
-        const playlistData = await playlistResponse.json();
+        let playlistData;
+        try {
+            const playlistText = await playlistResponse.text();
+            if (!playlistText) {
+                console.error('Empty playlist response');
+                return;
+            }
+            playlistData = JSON.parse(playlistText);
+        } catch (err) {
+            console.error('Failed to parse playlist response JSON:', err);
+            throw err;
+        }
         for (const item of playlistData.items) {
             const id = item.contentDetails.videoId;
             const title = item.snippet.title;
@@ -63,7 +74,18 @@ export async function manageYouTubeSubscriptionsAndPlaylist({ playlistId }: { pl
         const response = await fetchWithZapier(subsURL);
         await response.throwErrorIfNotOk();
 
-        const data = await response.json();
+        let data;
+        try {
+            const responseText = await response.text();
+            if (!responseText) {
+                console.error('Empty subscriptions response');
+                return [];
+            }
+            data = JSON.parse(responseText);
+        } catch (err) {
+            console.error('Failed to parse subscriptions response JSON:', err);
+            throw err;
+        }
         const channels: string[] = data.items.map((item: any) => item.snippet.resourceId.channelId);
         return channels;
     }
@@ -111,7 +133,18 @@ export async function manageYouTubeSubscriptionsAndPlaylist({ playlistId }: { pl
         const searchUrl = `https://www.googleapis.com/youtube/v3/search?${searchParams.toString()}`;
         const searchResponse = await fetchWithZapier(searchUrl);
         await searchResponse.throwErrorIfNotOk();
-        const searchData = await searchResponse.json();
+        let searchData;
+        try {
+            const searchText = await searchResponse.text();
+            if (!searchText) {
+                console.error('Empty search response');
+                continue;
+            }
+            searchData = JSON.parse(searchText);
+        } catch (err) {
+            console.error('Failed to parse search response JSON:', err);
+            continue;
+        }
 
         // Get the video data for the videos
         const videoIds = searchData.items.map((item: any) => item.id.videoId).join(',');
@@ -122,7 +155,18 @@ export async function manageYouTubeSubscriptionsAndPlaylist({ playlistId }: { pl
         const videoUrl = `${baseUrl}?${videoParams.toString()}`;
         const videoResponse = await fetchWithZapier(videoUrl);
         await videoResponse.throwErrorIfNotOk();
-        const videoData = await videoResponse.json();
+        let videoData;
+        try {
+            const videoText = await videoResponse.text();
+            if (!videoText) {
+                console.error('Empty video response');
+                continue;
+            }
+            videoData = JSON.parse(videoText);
+        } catch (err) {
+            console.error('Failed to parse video response JSON:', err);
+            continue;
+        }
         if (!videoData || !videoData.items) {
             throw new Error("Failed to fetch video data or items are missing.");
         }
@@ -187,36 +231,35 @@ export async function manageYouTubeSubscriptionsAndPlaylist({ playlistId }: { pl
                 body: JSON.stringify(requestBody)
             });
 
+            let responseJson;
             try {
                 const responseText = await response.text();
-                // console.log(`Raw response for ${title}: ${responseText}`);
-
+                console.log(`Raw response for ${title}: ${responseText}`);
                 if (!responseText) {
                     console.log(`Empty response for ${title}`);
                     return; // Success with no content
                 }
-
-                const responseJson = JSON.parse(responseText);
-                if (response.ok) {
-                    console.log(`Successfully added to playlist: ${id} title: ${title}`);
-                    return responseJson;
-                } else {
-                    console.error(`Error adding to playlist: ${id} title: ${title}`, responseJson);
-                    throw new Error(`Error adding to playlist. Response: ${id} title: ${title}`, responseJson);
-                }
-            } catch (error: any) {
-                if (error?.cause?.response?.status === 409 && retryCount < maxRetries) {
-                    const delay = baseDelay * Math.pow(2, retryCount);
-                    console.log(`Retrying after ${delay}ms for: ${title} (attempt ${retryCount + 1}/${maxRetries})`);
-                    await new Promise(resolve => setTimeout(resolve, delay));
-                    return addToPlaylist(id, title, playlistId, retryCount + 1);
-                }
-                console.error(`Error parsing response for ${title}:`, error);
-                throw error;
+                responseJson = JSON.parse(responseText);
+            } catch (err) {
+                console.error(`Failed to parse addToPlaylist response for ${title}:`, err);
+                throw err;
             }
-        } catch (error) {
-            console.error(`Error adding to playlist: ${id} title: ${title}`, error);
-            outputDict.error.push({ title, id, error: { message: error.message, retryCount } });
+            if (response.ok) {
+                console.log(`Successfully added to playlist: ${id} title: ${title}`);
+                return responseJson;
+            } else {
+                console.error(`Error adding to playlist: ${id} title: ${title}`, responseJson);
+                throw new Error(`Error adding to playlist. Response: ${id} title: ${title}`, responseJson);
+            }
+        } catch (error: any) {
+            if (error?.cause?.response?.status === 409 && retryCount < maxRetries) {
+                const delay = baseDelay * Math.pow(2, retryCount);
+                console.log(`Retrying after ${delay}ms for: ${title} (attempt ${retryCount + 1}/${maxRetries})`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                return addToPlaylist(id, title, playlistId, retryCount + 1);
+            }
+            console.error(`Error parsing response for ${title}:`, error);
+            throw error;
         }
     }
 
