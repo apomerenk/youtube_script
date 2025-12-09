@@ -12,3 +12,15 @@ steps
 4. copy this script into the custom action
 5. set the playlist id in the custom action
 6. let it run every morning
+
+Google Apps Script version (YouTube Advanced Service)
+- File: `google_apps_script.js`
+- Setup steps:
+  1) In Apps Script, open `google_apps_script.js` (or paste it in).
+  2) Services (puzzle-piece icon) → Add “YouTube Data API v3”.
+  3) Set `playlistId` at the top of the script.
+  4) Save the project; run once to authorize.
+  5) Triggers (clock icon) → Add Trigger:
+     - Function: `manageYouTubeSubscriptionsAndPlaylist`
+     - Event source: Time-driven → Day timer → pick a daily window.
+  6) Save the trigger; the script will run daily.
