@@ -4,9 +4,14 @@
  * Set your playlistId below and run manageYouTubeSubscriptionsAndPlaylist().
  */
 function manageYouTubeSubscriptionsAndPlaylist() {
+    // Playlist ID for the channel
   const playlistId = 'REPLACE_WITH_YOUR_PLAYLIST_ID';
+  // Number of days to look back for videos
   const daysBack = 2;
+  // Whether to push videos to the playlist. Useful for testing.
   const pushToPlaylist = true;
+  // Whether to include shorts in the playlist.
+  const includeShorts = false;
 
   const inPlaylistIds = new Set();
   const output = { added: [], alreadyInPlaylist: [], shorts: [], error: [] };
@@ -111,7 +116,7 @@ function manageYouTubeSubscriptionsAndPlaylist() {
         totalSec += match[3] ? parseInt(match[3]) : 0;
       }
 
-      if (totalSec <= 60) {
+      if (totalSec <= 60 && !includeShorts) {
         console.log(`Skipping short: ${title}`);
         output.shorts.push({ title, id, duration: totalSec });
         return;
