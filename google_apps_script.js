@@ -1,140 +1,387 @@
 /**
  * Google Apps Script version of manageYouTubeSubscriptionsAndPlaylist.
  * Requires enabling Advanced Service: YouTube Data API v3 (Services → add "YouTube").
- * Set your playlistId below and run manageYouTubeSubscriptionsAndPlaylist().
+ * Configuration is stored in config.gs - update values there.
  */
 function manageYouTubeSubscriptionsAndPlaylist() {
-    // Playlist ID for the channel
-  const playlistId = 'REPLACE_WITH_YOUR_PLAYLIST_ID';
-  // Number of days to look back for videos
-  const daysBack = 2;
-  // Whether to push videos to the playlist. Useful for testing.
-  const pushToPlaylist = true;
-  // Whether to include shorts in the playlist.
-  const includeShorts = false;
+  const playlistId = CONFIG.playlistId;
+  const daysBack = CONFIG.daysBack;
+  const pushToPlaylist = CONFIG.pushToPlaylist;
+  const includeShorts = CONFIG.includeShorts;
 
-  const inPlaylistIds = new Set();
   const output = { added: [], alreadyInPlaylist: [], shorts: [], error: [] };
-
-  // Recursively fetch all items in the target playlist.
-  function fetchAllPlaylistItems(pageToken) {
-    const res = YouTube.PlaylistItems.list('snippet,contentDetails', {
-      playlistId,
-      maxResults: 50,
-      pageToken
-    });
-    if (!res || !res.items) return;
-    res.items.forEach(item => {
-      const id = item.contentDetails.videoId;
-      const title = item.snippet.title;
-      console.log(`existing: ${id} - ${title}`);
-      inPlaylistIds.add(id);
-    });
-    if (res.nextPageToken) fetchAllPlaylistItems(res.nextPageToken);
-  }
-
-  // Recursively gather all subscribed channel IDs.
-  function getSubscribedChannels(pageToken, acc = []) {
-    const res = YouTube.Subscriptions.list('snippet', {
-      mine: true,
-      maxResults: 50,
-      pageToken
-    });
-    if (res && res.items) {
-      res.items.forEach(item => acc.push(item.snippet.resourceId.channelId));
-      if (res.nextPageToken) return getSubscribedChannels(res.nextPageToken, acc);
-    }
-    return acc;
-  }
-
-  // Insert a video into the playlist with retry on 409 conflicts.
-  function addToPlaylist(id, title, retry = 0) {
-    if (!pushToPlaylist) return;
-    const maxRetries = 6;
-    const baseDelayMs = 2000;
-
-    try {
-      const body = {
-        snippet: {
-          playlistId,
-          resourceId: { kind: 'youtube#video', videoId: id }
-        }
-      };
-      const res = YouTube.PlaylistItems.insert(body, 'snippet');
-      console.log(`Successfully added: ${id} - ${title}`);
-      output.added.push({ title, id });
-      return res;
-    } catch (err) {
-      if (err?.response?.status === 409 && retry < maxRetries) {
-        const delay = baseDelayMs * Math.pow(2, retry);
-        console.log(`Retrying ${title} after ${delay}ms (attempt ${retry + 1}/${maxRetries})`);
-        Utilities.sleep(delay);
-        return addToPlaylist(id, title, retry + 1);
-      }
-      console.error(`Error adding ${title}: ${err}`);
-      output.error.push({ title, id, error: { message: String(err), retryCount: retry } });
-    }
-  }
-
-  // Main flow.
-  fetchAllPlaylistItems();
-  console.log(`Playlist items loaded: ${inPlaylistIds.size}`);
-
-  const now = new Date();
-  const since = new Date(now.getTime() - daysBack * 24 * 60 * 60 * 1000).toISOString();
-  const channels = getSubscribedChannels();
+  const channelEarliest = _fetchChannelEarliest(playlistId);
+  const channelState = _loadChannelState(); // { [channelId]: lastFetchedIso }
+  const channels = _getSubscribedChannels();
+  let inPlaylistIds = null; // Lazy-loaded when needed
   console.log(`Subscribed channels: ${channels.length}`);
 
   channels.forEach(channelId => {
-    // Search recent videos for the channel.
-    const search = YouTube.Search.list('id', {
-      channelId,
-      publishedAfter: since,
-      maxResults: 50,
-      type: 'video'
+    // Initialize missing state from earliest playlist video for this channel; fallback to daysBack.
+    if (!channelState[channelId]) {
+      const earliest = channelEarliest[channelId];
+      if (earliest) {
+        channelState[channelId] = earliest;
+      } else {
+        const now = new Date();
+        channelState[channelId] = new Date(now.getTime() - daysBack * 24 * 60 * 60 * 1000).toISOString();
+      }
+    }
+
+    const sinceIso = channelState[channelId];
+    const videos = _fetchChannelVideosSince(channelId, sinceIso);
+    _processVideos({
+      videos,
+      inPlaylistIds,
+      playlistId,
+      includeShorts,
+      addToPlaylist: (id, title) => _addToPlaylist(playlistId, id, title, pushToPlaylist, output),
+      output
     });
-    if (!search || !search.items || !search.items.length) return;
 
-    const ids = search.items.map(it => it.id.videoId).filter(Boolean);
-    if (!ids.length) return;
-
-    // Fetch details to filter shorts and get titles.
-    const videos = YouTube.Videos.list('contentDetails,snippet', { id: ids.join(',') });
-    if (!videos || !videos.items) return;
-
-    videos.items.forEach(item => {
-      const id = item.id;
-      const title = item.snippet?.title || 'Unknown Title';
-      const duration = item.contentDetails?.duration || '';
-
-      // Parse ISO 8601 duration to seconds.
-      const match = duration.match(/PT(\d+H)?(\d+M)?(\d+S)?/);
-      let totalSec = 0;
-      if (match) {
-        totalSec += match[1] ? parseInt(match[1]) * 3600 : 0;
-        totalSec += match[2] ? parseInt(match[2]) * 60 : 0;
-        totalSec += match[3] ? parseInt(match[3]) : 0;
-      }
-
-      if (totalSec <= 60 && !includeShorts) {
-        console.log(`Skipping short: ${title}`);
-        output.shorts.push({ title, id, duration: totalSec });
-        return;
-      }
-
-      if (inPlaylistIds.has(id)) {
-        output.alreadyInPlaylist.push({ title, id });
-        return;
-      }
-
-      addToPlaylist(id, title);
-    });
+    // Update last fetched to now for next incremental run
+    channelState[channelId] = new Date().toISOString();
   });
 
   if (output.error.length) {
     throw new Error(`Error adding to playlist: ${JSON.stringify(output.error)}`);
   }
-  console.log('Done', JSON.stringify(output, null, 2));
+  _saveChannelState(channelState);
+//   console.log('Done', JSON.stringify(output, null, 2));
   return output;
+}
+
+
+function backfill_old_videos_from_config() {
+  const monthsBack = CONFIG.monthsBack || 6;
+  const channelId = CONFIG.channelId;
+  return _backfill_old_videos(channelId, monthsBack);
+}
+
+/**
+ * View the current channel state in a readable format.
+ * Returns channel IDs and their oldest pulled dates.
+ */
+function view_channel_state() {
+  const channelState = _loadChannelState();
+  const channels = _getSubscribedChannels();
+
+  const channelInfo = {};
+  channels.forEach(channelId => {
+    try {
+      const channel = YouTube.Channels.list('snippet', { id: channelId });
+      if (channel && channel.items && channel.items.length > 0) {
+        channelInfo[channelId] = {
+          name: channel.items[0].snippet.title,
+          oldestDate: channelState[channelId] || 'Not initialized'
+        };
+      } else {
+        channelInfo[channelId] = {
+          name: 'Unknown',
+          oldestDate: channelState[channelId] || 'Not initialized'
+        };
+      }
+    } catch (err) {
+      channelInfo[channelId] = {
+        name: 'Error fetching name',
+        oldestDate: channelState[channelId] || 'Not initialized'
+      };
+    }
+  });
+
+  const output = {
+    totalChannels: channels.length,
+    channelsWithState: Object.keys(channelState).length,
+    channelDetails: channelInfo,
+    rawState: channelState
+  };
+
+  console.log('=== Channel State ===');
+  console.log(JSON.stringify(output, null, 2));
+  return output;
+}
+
+
+/**
+ * Backfill old videos from channels - pulls videos older than the stored oldest date.
+ * For each channel, pulls videos from (oldestDate - monthsBack) to oldestDate,
+ * then updates the oldest date to the new oldest.
+ *
+ * @param {number} monthsBack - How many months back to pull from the current oldest date (default 6).
+ */
+// ---------- Helper functions (prefixed with _) ----------
+
+function _fetchChannelEarliest(playlistId, pageToken, channelEarliest = {}) {
+  const res = YouTube.PlaylistItems.list('snippet,contentDetails', {
+    playlistId,
+    maxResults: 50,
+    pageToken
+  });
+  if (res && res.items) {
+    res.items.forEach(item => {
+      const ownerId = item.snippet?.videoOwnerChannelId;
+      const publishedAt = item.contentDetails?.videoPublishedAt || item.snippet?.publishedAt;
+      if (ownerId && publishedAt) {
+        const current = channelEarliest[ownerId];
+        if (!current || new Date(publishedAt) < new Date(current)) {
+          channelEarliest[ownerId] = publishedAt;
+        }
+      }
+    });
+    if (res.nextPageToken) return _fetchChannelEarliest(playlistId, res.nextPageToken, channelEarliest);
+  }
+  return channelEarliest;
+}
+
+function _fetchAllPlaylistItems(playlistId, pageToken, accIds = new Set()) {
+  const res = YouTube.PlaylistItems.list('snippet,contentDetails', {
+    playlistId,
+    maxResults: 50,
+    pageToken
+  });
+  if (res && res.items) {
+    res.items.forEach(item => {
+      const id = item.contentDetails.videoId;
+      accIds.add(id);
+    });
+    if (res.nextPageToken) return _fetchAllPlaylistItems(playlistId, res.nextPageToken, accIds);
+  }
+  console.log(`fetched ${accIds.size} existing playlist items`);
+  return accIds;
+}
+
+function _getSubscribedChannels(pageToken, acc = []) {
+  const res = YouTube.Subscriptions.list('snippet', {
+    mine: true,
+    maxResults: 50,
+    pageToken
+  });
+  if (res && res.items) {
+    res.items.forEach(item => acc.push(item.snippet.resourceId.channelId));
+    if (res.nextPageToken) return _getSubscribedChannels(res.nextPageToken, acc);
+  }
+  return acc;
+}
+
+function _isQuotaError(err) {
+  const errStr = String(err);
+  return errStr.includes('quota') || errStr.includes('exceeded') || 
+         (err?.response?.status === 403 && errStr.includes('quota'));
+}
+
+function _addToPlaylist(playlistId, id, title, pushToPlaylist, output, retry = 0) {
+  if (!pushToPlaylist) return;
+  const maxRetries = 6;
+  const baseDelayMs = 2000;
+  const quotaDelayMs = 5000; // 5 seconds for quota errors
+
+  try {
+    const body = {
+      snippet: {
+        playlistId,
+        resourceId: { kind: 'youtube#video', videoId: id }
+      }
+    };
+    const res = YouTube.PlaylistItems.insert(body, 'snippet');
+    console.log(`Successfully added: ${id} - ${title}`);
+    output.added.push({ title, id });
+    return res;
+  } catch (err) {
+    const isQuota = _isQuotaError(err);
+    const isConflict = err?.response?.status === 409;
+    
+    if ((isConflict || isQuota) && retry < maxRetries) {
+      const delay = isQuota ? quotaDelayMs * (retry + 1) : baseDelayMs * Math.pow(2, retry);
+      const errorType = isQuota ? 'quota' : 'conflict';
+      console.log(`Retrying ${title} after ${delay}ms (${errorType} error, attempt ${retry + 1}/${maxRetries})`);
+      Utilities.sleep(delay);
+      return _addToPlaylist(playlistId, id, title, pushToPlaylist, output, retry + 1);
+    }
+    console.error(`Error adding ${title}: ${err}`);
+    output.error.push({ title, id, error: { message: String(err), retryCount: retry } });
+  }
+}
+
+function _fetchChannelVideosSince(channelId, sinceIso, untilIso = null, retry = 0) {
+  const videos = [];
+  const untilDate = untilIso ? new Date(untilIso) : null;
+  const maxRetries = 6;
+  const quotaDelayMs = 5000;
+  let pageToken;
+  let shouldContinue = true;
+  
+  do {
+    try {
+      const search = YouTube.Search.list('id', {
+        channelId,
+        publishedAfter: sinceIso,
+        maxResults: 50,
+        type: 'video',
+        order: 'date',
+        pageToken
+      });
+      if (!search || !search.items || !search.items.length) break;
+
+      const ids = search.items.map(it => it.id.videoId).filter(Boolean);
+      if (ids.length) {
+        const details = YouTube.Videos.list('contentDetails,snippet', { id: ids.join(',') });
+        if (details && details.items) {
+          for (const item of details.items) {
+            // If untilIso is provided, filter out videos at or after that date
+            if (untilDate) {
+              const publishedAt = new Date(item.snippet.publishedAt);
+              if (publishedAt >= untilDate) {
+                shouldContinue = false;
+                break;
+              }
+            }
+            
+            const duration = item.contentDetails?.duration || '';
+            videos.push({
+              id: item.id,
+              title: item.snippet?.title || 'Unknown Title',
+              durationSeconds: _parseDurationSeconds(duration)
+            });
+          }
+        }
+      }
+      
+      pageToken = shouldContinue ? search.nextPageToken : null;
+      retry = 0; // Reset retry counter on success
+    } catch (err) {
+      if (_isQuotaError(err) && retry < maxRetries) {
+        const delay = quotaDelayMs * (retry + 1);
+        console.log(`Quota error fetching videos, retrying after ${delay}ms (attempt ${retry + 1}/${maxRetries})`);
+        Utilities.sleep(delay);
+        retry++;
+        continue; // Retry the same page
+      }
+      console.error(`Error fetching videos for channel ${channelId}: ${err}`);
+      throw err; // Re-throw if not a quota error or max retries reached
+    }
+  } while (pageToken);
+  
+  return videos;
+}
+
+function _parseDurationSeconds(duration) {
+  const match = duration.match(/PT(\d+H)?(\d+M)?(\d+S)?/);
+  if (!match) return 0;
+  let totalSec = 0;
+  totalSec += match[1] ? parseInt(match[1]) * 3600 : 0;
+  totalSec += match[2] ? parseInt(match[2]) * 60 : 0;
+  totalSec += match[3] ? parseInt(match[3]) : 0;
+  return totalSec;
+}
+
+function _processVideos({ videos, inPlaylistIds, playlistId, includeShorts, addToPlaylist, output }) {
+  // Lazy-load playlist IDs only when we have videos to process
+  if (inPlaylistIds === null && videos.length > 0) {
+    inPlaylistIds = _fetchAllPlaylistItems(playlistId);
+  }
+
+  videos.forEach(({ id, title, durationSeconds }) => {
+    if (durationSeconds <= 60 && !includeShorts) {
+      console.log(`Skipping short: ${title}`);
+      output.shorts.push({ title, id, duration: durationSeconds });
+      return;
+    }
+
+    if (inPlaylistIds && inPlaylistIds.has(id)) {
+      output.alreadyInPlaylist.push({ title, id });
+      return;
+    }
+
+    addToPlaylist(id, title);
+  });
+}
+
+function _backfill_old_videos(rawChannelId, monthsBack) {
+  if (!rawChannelId || monthsBack <= 0) {
+    throw new Error('Missing required parameters: channelId and monthsBack must be provided');
+  }
+
+  // Resolve channel ID from @handle format or direct UC ID
+  const resolveChannelId = (input) => {
+    // Already a UC channel ID
+    if (input.startsWith('UC')) return input;
+
+    // Handle @handle format
+    const handleMatch = input.match(/@([A-Za-z0-9._-]+)/);
+    if (handleMatch) {
+      const handle = '@' + handleMatch[1];
+      const search = YouTube.Search.list('id', {
+        q: handle,
+        type: 'channel',
+        maxResults: 1
+      });
+      const foundId = search?.items?.[0]?.id?.channelId;
+      if (foundId) return foundId;
+      throw new Error(`Unable to find channel with handle: ${handle}`);
+    }
+
+    throw new Error(`Invalid channel format. Expected @handle (e.g., @ToomsGolf) or UC channel ID, got: ${input}`);
+  };
+
+  const channelId = resolveChannelId(rawChannelId);
+  const playlistId = CONFIG.playlistId;
+  const pushToPlaylist = CONFIG.pushToPlaylist;
+  const includeShorts = CONFIG.includeShorts;
+
+  const output = { added: [], alreadyInPlaylist: [], shorts: [], error: [] };
+  let inPlaylistIds = null; // Lazy-loaded when needed
+
+  const channelState = _loadChannelState();
+
+  if (!channelState[channelId]) {
+    throw new Error(`No oldest date stored for channel ${channelId}. Run manageYouTubeSubscriptionsAndPlaylist first to initialize state.`);
+  }
+
+  const currentOldest = new Date(channelState[channelId]);
+  const newOldest = new Date(currentOldest.getTime() - monthsBack * 30 * 24 * 60 * 60 * 1000);
+  const newOldestIso = newOldest.toISOString();
+  const currentOldestIso = currentOldest.toISOString();
+
+  console.log(`Backfilling ${channelId} (from ${rawChannelId}): pulling videos from ${newOldestIso} to ${currentOldestIso}`);
+
+  const videos = _fetchChannelVideosSince(channelId, newOldestIso, currentOldestIso);
+  _processVideos({
+    videos,
+    inPlaylistIds,
+    playlistId,
+    includeShorts,
+    addToPlaylist: (id, title) => _addToPlaylist(playlistId, id, title, pushToPlaylist, output),
+    output
+  });
+
+  if (pushToPlaylist) {
+    channelState[channelId] = newOldestIso;
+    _saveChannelState(channelState);
+    console.log(`Updated oldest date for ${channelId} to ${newOldestIso}`);
+  }
+
+  if (output.error.length) {
+    throw new Error(`Error adding to playlist: ${JSON.stringify(output.error)}`);
+  }
+  console.log('Done backfill_old_videos', JSON.stringify(output, null, 2));
+  return output;
+}
+
+// === Active state helpers ===
+function _loadChannelState() {
+  const props = PropertiesService.getUserProperties();
+  const raw = props.getProperty('YT_CHANNEL_STATE');
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw) || {};
+  } catch (e) {
+    console.error('Failed to parse channel state, resetting.', e);
+    return {};
+  }
+}
+
+function _saveChannelState(state) {
+  const props = PropertiesService.getUserProperties();
+  props.setProperty('YT_CHANNEL_STATE', JSON.stringify(state));
 }
 
