@@ -15,42 +15,25 @@ function manageYouTubeSubscriptionsAndPlaylist() {
   let existingPlaylistsByTitle = null; // Lazy-loaded when we first need to resolve an unmapped channel
   console.log(`Subscribed channels: ${channels.length}`);
 
-  channels.forEach(channelId => {
-    // Resolve (or create) the playlist dedicated to this channel.
-    const resolved = _resolveChannelPlaylist(channelId, playlistMap, pushToPlaylist, () => {
-      if (existingPlaylistsByTitle === null) existingPlaylistsByTitle = _fetchMyPlaylistsByTitle();
-      return existingPlaylistsByTitle;
-    }, output);
-    if (!resolved) {
-      console.log(`Skipping channel ${channelId}: no playlist available (pushToPlaylist is false).`);
-      return;
-    }
-    const playlistId = resolved;
+  const getExistingPlaylists = () => {
+    if (existingPlaylistsByTitle === null) existingPlaylistsByTitle = _fetchMyPlaylistsByTitle();
+    return existingPlaylistsByTitle;
+  };
 
-    // Initialize missing state from earliest video already in this channel's playlist; fallback to daysBack.
-    if (!channelState[channelId]) {
-      const earliest = _fetchPlaylistEarliest(playlistId);
-      if (earliest) {
-        channelState[channelId] = earliest;
+  channels.forEach(channelId => {
+    try {
+      _processChannel(channelId, { channelState, playlistMap, pushToPlaylist, includeShorts, daysBack, getExistingPlaylists, output });
+    } catch (err) {
+      // A mapped playlist may have been deleted since it was stored. Drop it, recreate, and retry once.
+      if (_isPlaylistNotFoundError(err) && playlistMap[channelId]) {
+        console.log(`Playlist ${playlistMap[channelId]} for channel ${channelId} not found; dropping from map and recreating.`);
+        delete playlistMap[channelId];
+        if (existingPlaylistsByTitle) delete existingPlaylistsByTitle[_playlistTitleFor(_getChannelTitle(channelId))];
+        _processChannel(channelId, { channelState, playlistMap, pushToPlaylist, includeShorts, daysBack, getExistingPlaylists, output });
       } else {
-        const now = new Date();
-        channelState[channelId] = new Date(now.getTime() - daysBack * 24 * 60 * 60 * 1000).toISOString();
+        throw err;
       }
     }
-
-    const sinceIso = channelState[channelId];
-    const videos = _fetchChannelVideosSince(channelId, sinceIso);
-    _processVideos({
-      videos,
-      inPlaylistIds: null, // Lazy-loaded per-playlist inside _processVideos
-      playlistId,
-      includeShorts,
-      addToPlaylist: (id, title) => _addToPlaylist(playlistId, id, title, pushToPlaylist, output),
-      output
-    });
-
-    // Update last fetched to now for next incremental run
-    channelState[channelId] = new Date().toISOString();
   });
 
   _savePlaylistMap(playlistMap);
@@ -60,6 +43,44 @@ function manageYouTubeSubscriptionsAndPlaylist() {
   }
 //   console.log('Done', JSON.stringify(output, null, 2));
   return output;
+}
+
+/**
+ * Process a single channel: resolve/create its playlist, then pull and add new videos.
+ * Throws if a mapped playlist can no longer be found so the caller can recover.
+ */
+function _processChannel(channelId, { channelState, playlistMap, pushToPlaylist, includeShorts, daysBack, getExistingPlaylists, output }) {
+  // Resolve (or create) the playlist dedicated to this channel.
+  const playlistId = _resolveChannelPlaylist(channelId, playlistMap, pushToPlaylist, getExistingPlaylists, output);
+  if (!playlistId) {
+    console.log(`Skipping channel ${channelId}: no playlist available (pushToPlaylist is false).`);
+    return;
+  }
+
+  // Initialize missing state from earliest video already in this channel's playlist; fallback to daysBack.
+  if (!channelState[channelId]) {
+    const earliest = _fetchPlaylistEarliest(playlistId);
+    if (earliest) {
+      channelState[channelId] = earliest;
+    } else {
+      const now = new Date();
+      channelState[channelId] = new Date(now.getTime() - daysBack * 24 * 60 * 60 * 1000).toISOString();
+    }
+  }
+
+  const sinceIso = channelState[channelId];
+  const videos = _fetchChannelVideosSince(channelId, sinceIso);
+  _processVideos({
+    videos,
+    inPlaylistIds: null, // Lazy-loaded per-playlist inside _processVideos
+    playlistId,
+    includeShorts,
+    addToPlaylist: (id, title) => _addToPlaylist(playlistId, id, title, pushToPlaylist, output),
+    output
+  });
+
+  // Update last fetched to now for next incremental run
+  channelState[channelId] = new Date().toISOString();
 }
 
 
@@ -245,8 +266,13 @@ function _getSubscribedChannels(pageToken, acc = []) {
 
 function _isQuotaError(err) {
   const errStr = String(err);
-  return errStr.includes('quota') || errStr.includes('exceeded') || 
+  return errStr.includes('quota') || errStr.includes('exceeded') ||
          (err?.response?.status === 403 && errStr.includes('quota'));
+}
+
+function _isPlaylistNotFoundError(err) {
+  const errStr = String(err);
+  return errStr.includes('playlist') && errStr.includes('cannot be found');
 }
 
 function _addToPlaylist(playlistId, id, title, pushToPlaylist, output, retry = 0) {
