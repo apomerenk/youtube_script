@@ -4,22 +4,32 @@
  * Configuration is stored in config.gs - update values there.
  */
 function manageYouTubeSubscriptionsAndPlaylist() {
-  const playlistId = CONFIG.playlistId;
   const daysBack = CONFIG.daysBack;
   const pushToPlaylist = CONFIG.pushToPlaylist;
   const includeShorts = CONFIG.includeShorts;
 
-  const output = { added: [], alreadyInPlaylist: [], shorts: [], error: [] };
-  const channelEarliest = _fetchChannelEarliest(playlistId);
+  const output = { added: [], alreadyInPlaylist: [], shorts: [], error: [], playlistsCreated: [] };
   const channelState = _loadChannelState(); // { [channelId]: lastFetchedIso }
+  const playlistMap = _loadPlaylistMap(); // { [channelId]: playlistId }
   const channels = _getSubscribedChannels();
-  let inPlaylistIds = null; // Lazy-loaded when needed
+  let existingPlaylistsByTitle = null; // Lazy-loaded when we first need to resolve an unmapped channel
   console.log(`Subscribed channels: ${channels.length}`);
 
   channels.forEach(channelId => {
-    // Initialize missing state from earliest playlist video for this channel; fallback to daysBack.
+    // Resolve (or create) the playlist dedicated to this channel.
+    const resolved = _resolveChannelPlaylist(channelId, playlistMap, pushToPlaylist, () => {
+      if (existingPlaylistsByTitle === null) existingPlaylistsByTitle = _fetchMyPlaylistsByTitle();
+      return existingPlaylistsByTitle;
+    }, output);
+    if (!resolved) {
+      console.log(`Skipping channel ${channelId}: no playlist available (pushToPlaylist is false).`);
+      return;
+    }
+    const playlistId = resolved;
+
+    // Initialize missing state from earliest video already in this channel's playlist; fallback to daysBack.
     if (!channelState[channelId]) {
-      const earliest = channelEarliest[channelId];
+      const earliest = _fetchPlaylistEarliest(playlistId);
       if (earliest) {
         channelState[channelId] = earliest;
       } else {
@@ -32,7 +42,7 @@ function manageYouTubeSubscriptionsAndPlaylist() {
     const videos = _fetchChannelVideosSince(channelId, sinceIso);
     _processVideos({
       videos,
-      inPlaylistIds,
+      inPlaylistIds: null, // Lazy-loaded per-playlist inside _processVideos
       playlistId,
       includeShorts,
       addToPlaylist: (id, title) => _addToPlaylist(playlistId, id, title, pushToPlaylist, output),
@@ -43,10 +53,11 @@ function manageYouTubeSubscriptionsAndPlaylist() {
     channelState[channelId] = new Date().toISOString();
   });
 
+  _savePlaylistMap(playlistMap);
+  _saveChannelState(channelState);
   if (output.error.length) {
     throw new Error(`Error adding to playlist: ${JSON.stringify(output.error)}`);
   }
-  _saveChannelState(channelState);
 //   console.log('Done', JSON.stringify(output, null, 2));
   return output;
 }
@@ -64,6 +75,7 @@ function backfill_old_videos_from_config() {
  */
 function view_channel_state() {
   const channelState = _loadChannelState();
+  const playlistMap = _loadPlaylistMap();
   const channels = _getSubscribedChannels();
 
   const channelInfo = {};
@@ -73,18 +85,21 @@ function view_channel_state() {
       if (channel && channel.items && channel.items.length > 0) {
         channelInfo[channelId] = {
           name: channel.items[0].snippet.title,
-          oldestDate: channelState[channelId] || 'Not initialized'
+          oldestDate: channelState[channelId] || 'Not initialized',
+          playlistId: playlistMap[channelId] || 'Not created'
         };
       } else {
         channelInfo[channelId] = {
           name: 'Unknown',
-          oldestDate: channelState[channelId] || 'Not initialized'
+          oldestDate: channelState[channelId] || 'Not initialized',
+          playlistId: playlistMap[channelId] || 'Not created'
         };
       }
     } catch (err) {
       channelInfo[channelId] = {
         name: 'Error fetching name',
-        oldestDate: channelState[channelId] || 'Not initialized'
+        oldestDate: channelState[channelId] || 'Not initialized',
+        playlistId: playlistMap[channelId] || 'Not created'
       };
     }
   });
@@ -92,8 +107,10 @@ function view_channel_state() {
   const output = {
     totalChannels: channels.length,
     channelsWithState: Object.keys(channelState).length,
+    channelsWithPlaylist: Object.keys(playlistMap).length,
     channelDetails: channelInfo,
-    rawState: channelState
+    rawState: channelState,
+    playlistMap
   };
 
   console.log('=== Channel State ===');
@@ -111,7 +128,7 @@ function view_channel_state() {
  */
 // ---------- Helper functions (prefixed with _) ----------
 
-function _fetchChannelEarliest(playlistId, pageToken, channelEarliest = {}) {
+function _fetchPlaylistEarliest(playlistId, pageToken, earliest = null) {
   const res = YouTube.PlaylistItems.list('snippet,contentDetails', {
     playlistId,
     maxResults: 50,
@@ -119,18 +136,81 @@ function _fetchChannelEarliest(playlistId, pageToken, channelEarliest = {}) {
   });
   if (res && res.items) {
     res.items.forEach(item => {
-      const ownerId = item.snippet?.videoOwnerChannelId;
       const publishedAt = item.contentDetails?.videoPublishedAt || item.snippet?.publishedAt;
-      if (ownerId && publishedAt) {
-        const current = channelEarliest[ownerId];
-        if (!current || new Date(publishedAt) < new Date(current)) {
-          channelEarliest[ownerId] = publishedAt;
-        }
+      if (publishedAt && (!earliest || new Date(publishedAt) < new Date(earliest))) {
+        earliest = publishedAt;
       }
     });
-    if (res.nextPageToken) return _fetchChannelEarliest(playlistId, res.nextPageToken, channelEarliest);
+    if (res.nextPageToken) return _fetchPlaylistEarliest(playlistId, res.nextPageToken, earliest);
   }
-  return channelEarliest;
+  return earliest;
+}
+
+/**
+ * Resolve the playlist dedicated to a channel, creating it if needed.
+ * Order of resolution: stored map -> existing playlist matched by title -> create new.
+ * Returns the playlistId, or null when no playlist exists and pushToPlaylist is false.
+ *
+ * @param {function(): Object} getExistingByTitle - lazy accessor returning { [title]: playlistId }
+ */
+function _resolveChannelPlaylist(channelId, playlistMap, pushToPlaylist, getExistingByTitle, output) {
+  if (playlistMap[channelId]) return playlistMap[channelId];
+
+  const channelTitle = _getChannelTitle(channelId);
+  const title = _playlistTitleFor(channelTitle);
+
+  // Reuse an existing playlist with the same title (e.g. state was lost but playlist survived).
+  let playlistId = getExistingByTitle()[title];
+
+  if (!playlistId) {
+    if (!pushToPlaylist) return null; // Dry-run and nothing to reuse: skip this channel.
+    playlistId = _createPlaylist(title, channelId);
+    getExistingByTitle()[title] = playlistId;
+    if (output) output.playlistsCreated.push({ channelId, title, playlistId });
+  }
+
+  playlistMap[channelId] = playlistId;
+  return playlistId;
+}
+
+function _playlistTitleFor(channelTitle) {
+  const prefix = CONFIG.playlistTitlePrefix || '';
+  return `${prefix}${channelTitle}`;
+}
+
+function _getChannelTitle(channelId) {
+  try {
+    const channel = YouTube.Channels.list('snippet', { id: channelId });
+    return channel?.items?.[0]?.snippet?.title || channelId;
+  } catch (err) {
+    console.error(`Error fetching channel title for ${channelId}: ${err}`);
+    return channelId;
+  }
+}
+
+function _fetchMyPlaylistsByTitle(pageToken, acc = {}) {
+  const res = YouTube.Playlists.list('snippet', {
+    mine: true,
+    maxResults: 50,
+    pageToken
+  });
+  if (res && res.items) {
+    res.items.forEach(item => {
+      // First match wins if titles collide; the stored map keeps subsequent runs stable.
+      if (!(item.snippet.title in acc)) acc[item.snippet.title] = item.id;
+    });
+    if (res.nextPageToken) return _fetchMyPlaylistsByTitle(res.nextPageToken, acc);
+  }
+  return acc;
+}
+
+function _createPlaylist(title, channelId) {
+  const res = YouTube.Playlists.insert({
+    snippet: { title, description: `Auto-generated playlist for channel ${channelId}` },
+    status: { privacyStatus: CONFIG.playlistPrivacy || 'private' }
+  }, 'snippet,status');
+  console.log(`Created playlist "${title}": ${res.id}`);
+  return res.id;
 }
 
 function _fetchAllPlaylistItems(playlistId, pageToken, accIds = new Set()) {
@@ -324,14 +404,21 @@ function _backfill_old_videos(rawChannelId, monthsBack) {
   };
 
   const channelId = resolveChannelId(rawChannelId);
-  const playlistId = CONFIG.playlistId;
   const pushToPlaylist = CONFIG.pushToPlaylist;
   const includeShorts = CONFIG.includeShorts;
 
-  const output = { added: [], alreadyInPlaylist: [], shorts: [], error: [] };
+  const output = { added: [], alreadyInPlaylist: [], shorts: [], error: [], playlistsCreated: [] };
   let inPlaylistIds = null; // Lazy-loaded when needed
 
   const channelState = _loadChannelState();
+
+  // Resolve (or create) the playlist dedicated to this channel.
+  const playlistMap = _loadPlaylistMap();
+  const playlistId = _resolveChannelPlaylist(channelId, playlistMap, pushToPlaylist, () => _fetchMyPlaylistsByTitle(), output);
+  if (!playlistId) {
+    throw new Error(`No playlist for channel ${channelId} and pushToPlaylist is false; enable pushToPlaylist to create one.`);
+  }
+  _savePlaylistMap(playlistMap);
 
   if (!channelState[channelId]) {
     throw new Error(`No oldest date stored for channel ${channelId}. Run manageYouTubeSubscriptionsAndPlaylist first to initialize state.`);
@@ -383,5 +470,23 @@ function _loadChannelState() {
 function _saveChannelState(state) {
   const props = PropertiesService.getUserProperties();
   props.setProperty('YT_CHANNEL_STATE', JSON.stringify(state));
+}
+
+// === Playlist map helpers ({ [channelId]: playlistId }) ===
+function _loadPlaylistMap() {
+  const props = PropertiesService.getUserProperties();
+  const raw = props.getProperty('YT_PLAYLIST_MAP');
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw) || {};
+  } catch (e) {
+    console.error('Failed to parse playlist map, resetting.', e);
+    return {};
+  }
+}
+
+function _savePlaylistMap(map) {
+  const props = PropertiesService.getUserProperties();
+  props.setProperty('YT_PLAYLIST_MAP', JSON.stringify(map));
 }
 
