@@ -15,9 +15,10 @@ const CONFIG = {
   // Number of days to look back for subscriptions
   daysBack: 2,
 
-  // Inputs for fetch_channel_video
-  channelId: '@CHANNEL_ID_HERE',
-  monthsBack: 6, // number of months to fetch back from now
+  // Backfill (backfill_old_videos_from_config) runs across ALL subscribed channels.
+  // How many months further back to pull, per channel, per run. Run it repeatedly
+  // to keep reaching further back in each channel's history.
+  monthsBack: 6,
 
   // Whether to actually add videos to the playlist (set to false for testing)
   pushToPlaylist: true,
