@@ -1,9 +1,9 @@
 To be used with zapier.
 https://zapier.com/app/assets/zaps
 This script automatically:
-- checks the input playlist and builds up set of video ids
 - looks at all subscribed channels and pulls non-shorts videos they published in the last x days
-- if the video isn't already in the playlist, adds it
+- maintains a dedicated playlist per channel (auto-created and named after the channel)
+- if the video isn't already in that channel's playlist, adds it
 
 steps
 1. set up a zap
@@ -18,7 +18,7 @@ Google Apps Script version (YouTube Advanced Service)
 - Setup steps:
   1) In Apps Script, open `google_apps_script.js` (or paste it in).
   2) Services (puzzle-piece icon) → Add “YouTube Data API v3”.
-  3) Set `playlistId` at the top of the script.
+  3) Copy `config.example.gs` to `config.gs` and adjust settings (playlists are auto-created per channel — no playlist IDs to set).
   4) Save the project; run once to authorize.
   5) Triggers (clock icon) → Add Trigger:
      - Function: `manageYouTubeSubscriptionsAndPlaylist`
