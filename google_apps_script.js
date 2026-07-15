@@ -84,10 +84,60 @@ function _processChannel(channelId, { channelState, playlistMap, pushToPlaylist,
 }
 
 
+/**
+ * Backfill older videos for EVERY subscribed channel into its own playlist.
+ * For each channel, pulls videos from (oldest-in-playlist - monthsBack) up to the
+ * oldest video currently in that channel's playlist (or up to now if the playlist
+ * is empty). Run it repeatedly to keep reaching further back — each pass reads the
+ * playlist's new earliest video and goes another monthsBack beyond it.
+ * Does NOT touch the incremental cursor used by manageYouTubeSubscriptionsAndPlaylist.
+ */
 function backfill_old_videos_from_config() {
   const monthsBack = CONFIG.monthsBack || 6;
-  const channelId = CONFIG.channelId;
-  return _backfill_old_videos(channelId, monthsBack);
+  const pushToPlaylist = CONFIG.pushToPlaylist;
+  const includeShorts = CONFIG.includeShorts;
+
+  const output = { added: [], alreadyInPlaylist: [], shorts: [], error: [], playlistsCreated: [] };
+  const playlistMap = _loadPlaylistMap();
+  const channels = _getSubscribedChannels();
+  let existingPlaylistsByTitle = null;
+  const getExistingPlaylists = () => {
+    if (existingPlaylistsByTitle === null) existingPlaylistsByTitle = _fetchMyPlaylistsByTitle();
+    return existingPlaylistsByTitle;
+  };
+  console.log(`Backfilling ${channels.length} channels, ${monthsBack} months each.`);
+
+  const ctx = { playlistMap, pushToPlaylist, includeShorts, getExistingPlaylists, output };
+
+  channels.forEach(channelId => {
+    try {
+      _backfillChannel(channelId, monthsBack, ctx);
+    } catch (err) {
+      // A mapped playlist may have been deleted since it was stored. Drop it, recreate, and retry once.
+      if (_isPlaylistNotFoundError(err) && playlistMap[channelId]) {
+        console.log(`Playlist ${playlistMap[channelId]} for channel ${channelId} not found; dropping from map and recreating.`);
+        delete playlistMap[channelId];
+        if (existingPlaylistsByTitle) delete existingPlaylistsByTitle[_playlistTitleFor(_getChannelTitle(channelId))];
+        try {
+          _backfillChannel(channelId, monthsBack, ctx);
+        } catch (retryErr) {
+          console.error(`Backfill failed for ${channelId} after retry: ${retryErr}`);
+          output.error.push({ channelId, error: { message: String(retryErr) } });
+        }
+      } else {
+        // Don't let one channel abort the whole pass; record and continue.
+        console.error(`Backfill failed for ${channelId}: ${err}`);
+        output.error.push({ channelId, error: { message: String(err) } });
+      }
+    }
+  });
+
+  _savePlaylistMap(playlistMap);
+  if (output.error.length) {
+    throw new Error(`Errors during backfill: ${JSON.stringify(output.error)}`);
+  }
+  console.log('Done backfill_old_videos_from_config', JSON.stringify(output, null, 2));
+  return output;
 }
 
 /**
@@ -140,13 +190,6 @@ function view_channel_state() {
 }
 
 
-/**
- * Backfill old videos from channels - pulls videos older than the stored oldest date.
- * For each channel, pulls videos from (oldestDate - monthsBack) to oldestDate,
- * then updates the oldest date to the new oldest.
- *
- * @param {number} monthsBack - How many months back to pull from the current oldest date (default 6).
- */
 // ---------- Helper functions (prefixed with _) ----------
 
 function _fetchPlaylistEarliest(playlistId, pageToken, earliest = null) {
@@ -402,82 +445,37 @@ function _processVideos({ videos, inPlaylistIds, playlistId, includeShorts, addT
   });
 }
 
-function _backfill_old_videos(rawChannelId, monthsBack) {
-  if (!rawChannelId || monthsBack <= 0) {
-    throw new Error('Missing required parameters: channelId and monthsBack must be provided');
-  }
-
-  // Resolve channel ID from @handle format or direct UC ID
-  const resolveChannelId = (input) => {
-    // Already a UC channel ID
-    if (input.startsWith('UC')) return input;
-
-    // Handle @handle format
-    const handleMatch = input.match(/@([A-Za-z0-9._-]+)/);
-    if (handleMatch) {
-      const handle = '@' + handleMatch[1];
-      const search = YouTube.Search.list('id', {
-        q: handle,
-        type: 'channel',
-        maxResults: 1
-      });
-      const foundId = search?.items?.[0]?.id?.channelId;
-      if (foundId) return foundId;
-      throw new Error(`Unable to find channel with handle: ${handle}`);
-    }
-
-    throw new Error(`Invalid channel format. Expected @handle (e.g., @ToomsGolf) or UC channel ID, got: ${input}`);
-  };
-
-  const channelId = resolveChannelId(rawChannelId);
-  const pushToPlaylist = CONFIG.pushToPlaylist;
-  const includeShorts = CONFIG.includeShorts;
-
-  const output = { added: [], alreadyInPlaylist: [], shorts: [], error: [], playlistsCreated: [] };
-  let inPlaylistIds = null; // Lazy-loaded when needed
-
-  const channelState = _loadChannelState();
-
-  // Resolve (or create) the playlist dedicated to this channel.
-  const playlistMap = _loadPlaylistMap();
-  const playlistId = _resolveChannelPlaylist(channelId, playlistMap, pushToPlaylist, () => _fetchMyPlaylistsByTitle(), output);
+/**
+ * Backfill one channel: pull videos from (oldest-in-playlist - monthsBack) up to the
+ * oldest video currently in the channel's playlist, and add them. The boundary is read
+ * from the playlist itself, so this is idempotent and never touches the incremental cursor.
+ * Throws if a mapped playlist can no longer be found so the caller can recover.
+ */
+function _backfillChannel(channelId, monthsBack, { playlistMap, pushToPlaylist, includeShorts, getExistingPlaylists, output }) {
+  const playlistId = _resolveChannelPlaylist(channelId, playlistMap, pushToPlaylist, getExistingPlaylists, output);
   if (!playlistId) {
-    throw new Error(`No playlist for channel ${channelId} and pushToPlaylist is false; enable pushToPlaylist to create one.`);
-  }
-  _savePlaylistMap(playlistMap);
-
-  if (!channelState[channelId]) {
-    throw new Error(`No oldest date stored for channel ${channelId}. Run manageYouTubeSubscriptionsAndPlaylist first to initialize state.`);
+    console.log(`Skipping backfill for ${channelId}: no playlist available (pushToPlaylist is false).`);
+    return;
   }
 
-  const currentOldest = new Date(channelState[channelId]);
+  // Boundary = oldest video already in this channel's playlist, or now if the playlist is empty.
+  const earliestIso = _fetchPlaylistEarliest(playlistId);
+  const currentOldest = earliestIso ? new Date(earliestIso) : new Date();
   const newOldest = new Date(currentOldest.getTime() - monthsBack * 30 * 24 * 60 * 60 * 1000);
   const newOldestIso = newOldest.toISOString();
   const currentOldestIso = currentOldest.toISOString();
 
-  console.log(`Backfilling ${channelId} (from ${rawChannelId}): pulling videos from ${newOldestIso} to ${currentOldestIso}`);
+  console.log(`Backfilling ${channelId}: pulling videos from ${newOldestIso} to ${currentOldestIso}`);
 
   const videos = _fetchChannelVideosSince(channelId, newOldestIso, currentOldestIso);
   _processVideos({
     videos,
-    inPlaylistIds,
+    inPlaylistIds: null, // Lazy-loaded per-playlist inside _processVideos
     playlistId,
     includeShorts,
     addToPlaylist: (id, title) => _addToPlaylist(playlistId, id, title, pushToPlaylist, output),
     output
   });
-
-  if (pushToPlaylist) {
-    channelState[channelId] = newOldestIso;
-    _saveChannelState(channelState);
-    console.log(`Updated oldest date for ${channelId} to ${newOldestIso}`);
-  }
-
-  if (output.error.length) {
-    throw new Error(`Error adding to playlist: ${JSON.stringify(output.error)}`);
-  }
-  console.log('Done backfill_old_videos', JSON.stringify(output, null, 2));
-  return output;
 }
 
 // === Active state helpers ===
