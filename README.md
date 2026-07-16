@@ -30,7 +30,8 @@ Optional web UI (group manager)
 - Add `index.html` to the same Apps Script project: File → New → HTML, name it exactly `index`, paste the contents of `index.html`.
 - Make sure the latest `google_apps_script.js` (which defines `doGet`) is pasted into the project too.
 - Deploy → New deployment → type "Web app" → execute as **me**, access **Only myself** → Deploy, then open the web app URL (works on mobile).
-- The UI lists every subscribed channel and lets you assign each to a group by name (channels sharing a name share one playlist); clearing the box gives a channel its own playlist. Assignments save automatically to script properties and override `CONFIG.channelGroups`. There's also a "Backfill all" button.
-- Group changes apply to *future* videos; already-added videos stay in their current playlist.
+- The UI lists every subscribed channel and lets you assign each to a group by name (channels sharing a name share one playlist); clearing the box gives a channel its own playlist. Assignments save automatically to script properties and override `CONFIG.channelGroups`.
+- After changing groups, use **Clean up playlists** (deletes duplicate/orphaned auto-created playlists — your manual playlists are never touched, identified by a `[yt-sync:…]` marker in the description), then **Backfill all** to repopulate. Cleanup is a dry run unless `CONFIG.pushToPlaylist` is true.
+- Group changes apply to *future* videos; already-added videos stay in their current playlist until you clean up + backfill.
 - Redeploying after code changes: if you see "Script function not found: doGet", the deployment is serving old code. Deploy → Manage deployments → edit (pencil) → Version: **New version** → Deploy. (New pastes alone don't update an existing web-app deployment.)
 - Note: long backfills can hit Apps Script's ~6 min execution limit; if a run times out, just run it again — progress is saved incrementally, and re-running picks up where it left off.

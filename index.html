@@ -46,8 +46,13 @@
     <div class="card">
       <div class="row">
         <button id="btn-refresh" onclick="load()">↻ Refresh</button>
+        <button id="btn-cleanup" onclick="cleanup()">🧹 Clean up playlists</button>
         <button id="btn-backfill" onclick="backfill()">⏪ Backfill all</button>
         <span id="status"></span>
+      </div>
+      <div class="hint" style="margin:10px 0 0;">
+        After changing groups: <b>Clean up playlists</b> deletes duplicate/orphaned auto-created
+        playlists (your manual playlists are never touched), then <b>Backfill all</b> repopulates them.
       </div>
     </div>
 
@@ -74,7 +79,7 @@
     }
     function setBusy(b) {
       busy = b;
-      ['btn-refresh','btn-backfill'].forEach(function(id){ document.getElementById(id).disabled = b; });
+      ['btn-refresh','btn-cleanup','btn-backfill'].forEach(function(id){ document.getElementById(id).disabled = b; });
     }
     function esc(x){ return String(x==null?'':x).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
     function plUrl(id){ return 'https://www.youtube.com/playlist?list=' + encodeURIComponent(id); }
@@ -145,6 +150,20 @@
           setStatus('Save failed: ' + esc(err && err.message || err), 'err');
         })
         .setChannelGroup(c.id, val);
+    }
+
+    function cleanup() {
+      if (busy) return;
+      if (!confirm('Delete duplicate and orphaned auto-created playlists to match your current groups? Your manually-created playlists are not touched. Run “Backfill all” afterward to repopulate.')) return;
+      setBusy(true); setStatus('Cleaning up…', 'running', true);
+      google.script.run
+        .withSuccessHandler(function(res){
+          setBusy(false);
+          setStatus('Cleaned up: deleted ' + res.deletedCount + ' playlist(s). ' + (res.applied ? 'Now run Backfill all.' : '(dry run — set pushToPlaylist true)'), 'ok');
+          load();
+        })
+        .withFailureHandler(function(err){ setBusy(false); setStatus('Cleanup failed: ' + esc(err && err.message || err), 'err'); })
+        .cleanup_playlists();
     }
 
     function backfill() {

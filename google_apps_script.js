@@ -59,9 +59,13 @@ function _processChannel(channelId, { channelState, playlistMap, pushToPlaylist,
     return;
   }
 
+  // A playlist created earlier in this same run isn't queryable yet (YouTube propagation
+  // lag), so treat it as empty instead of calling playlistItems.list on it.
+  const isNew = _wasJustCreated(playlistId, output);
+
   // Initialize missing state from earliest video already in this channel's playlist; fallback to daysBack.
   if (!channelState[channelId]) {
-    const earliest = _fetchPlaylistEarliest(playlistId, channelId);
+    const earliest = isNew ? null : _fetchPlaylistEarliest(playlistId, channelId);
     if (earliest) {
       channelState[channelId] = earliest;
     } else {
@@ -74,7 +78,7 @@ function _processChannel(channelId, { channelState, playlistMap, pushToPlaylist,
   const videos = _fetchChannelVideosSince(channelId, sinceIso);
   _processVideos({
     videos,
-    inPlaylistIds: null, // Lazy-loaded per-playlist inside _processVideos
+    inPlaylistIds: isNew ? new Set() : null, // new playlist is empty; else lazy-load in _processVideos
     playlistId,
     includeShorts,
     addToPlaylist: (id, title) => _addToPlaylist(playlistId, id, title, pushToPlaylist, output),
@@ -211,6 +215,18 @@ function _fetchPlaylistEarliest(playlistId, channelId = null, pageToken = undefi
 // Marker embedded in an auto-created playlist's description so we can re-identify it
 // by channel/group even if the channel (and thus the title) is later renamed.
 const _PLAYLIST_TAG_RE = /\[yt-sync:([^\]]+)\]/;
+// Legacy description format used before tags existed (still one of "our" playlists).
+const _PLAYLIST_LEGACY_RE = /^Auto-generated playlist for channel (UC[\w-]+)/;
+
+/** Extract our identity tag from a playlist description, or null if it isn't one of ours. */
+function _extractPlaylistTag(description) {
+  const d = description || '';
+  const m = d.match(_PLAYLIST_TAG_RE);
+  if (m) return m[1];
+  const legacy = d.match(_PLAYLIST_LEGACY_RE);
+  if (legacy) return `channel:${legacy[1]}`;
+  return null;
+}
 
 /**
  * The target playlist for a channel: a shared group playlist if the channel is configured
@@ -256,6 +272,11 @@ function _resolveChannelPlaylist(channelId, playlistMap, pushToPlaylist, getExis
   return playlistId;
 }
 
+/** True if this playlist was created earlier in the current run (so it may not be queryable yet). */
+function _wasJustCreated(playlistId, output) {
+  return !!(output && output.playlistsCreated && output.playlistsCreated.some(p => p.playlistId === playlistId));
+}
+
 /**
  * Drop a channel's cached resolution so it can be recreated (used after a playlist was
  * deleted out from under us). Clears the stored map entry and both lookup caches.
@@ -296,8 +317,8 @@ function _fetchMyPlaylists(pageToken, acc = { byTitle: {}, byTag: {} }) {
       const title = item.snippet.title;
       // First match wins if titles collide; the stored map keeps subsequent runs stable.
       if (!(title in acc.byTitle)) acc.byTitle[title] = item.id;
-      const tagMatch = (item.snippet.description || '').match(_PLAYLIST_TAG_RE);
-      if (tagMatch && !(tagMatch[1] in acc.byTag)) acc.byTag[tagMatch[1]] = item.id;
+      const tag = _extractPlaylistTag(item.snippet.description);
+      if (tag && !(tag in acc.byTag)) acc.byTag[tag] = item.id;
     });
     if (res.nextPageToken) return _fetchMyPlaylists(res.nextPageToken, acc);
   }
@@ -528,8 +549,12 @@ function _backfillChannel(channelId, monthsBack, { playlistMap, pushToPlaylist, 
     return;
   }
 
+  // A playlist created earlier in this same run isn't queryable yet (YouTube propagation
+  // lag); treat it as empty rather than calling playlistItems.list on it.
+  const isNew = _wasJustCreated(playlistId, output);
+
   // Boundary = this channel's oldest video already in the playlist, or now if it has none yet.
-  const earliestIso = _fetchPlaylistEarliest(playlistId, channelId);
+  const earliestIso = isNew ? null : _fetchPlaylistEarliest(playlistId, channelId);
   const currentOldest = earliestIso ? new Date(earliestIso) : new Date();
   const newOldest = new Date(currentOldest.getTime() - monthsBack * 30 * 24 * 60 * 60 * 1000);
   const newOldestIso = newOldest.toISOString();
@@ -540,7 +565,7 @@ function _backfillChannel(channelId, monthsBack, { playlistMap, pushToPlaylist, 
   const videos = _fetchChannelVideosSince(channelId, newOldestIso, currentOldestIso);
   _processVideos({
     videos,
-    inPlaylistIds: null, // Lazy-loaded per-playlist inside _processVideos
+    inPlaylistIds: isNew ? new Set() : null, // new playlist is empty; else lazy-load in _processVideos
     playlistId,
     includeShorts,
     addToPlaylist: (id, title) => _addToPlaylist(playlistId, id, title, pushToPlaylist, output),
@@ -657,6 +682,85 @@ function setChannelGroup(channelId, groupName) {
     }
   }
   return { ok: true, channelId, group: g, rehomed };
+}
+
+/**
+ * Clean up auto-generated playlists so the current grouping is reflected by exactly one
+ * playlist per channel/group. For each identity tag: keep the fullest playlist, delete any
+ * duplicates. Delete playlists whose tag is now orphaned (e.g. a per-channel playlist for a
+ * channel that has since been grouped). Manually-created playlists (no yt-sync marker) are
+ * never touched. Rebuilds the stored playlist map from the survivors.
+ *
+ * After running this, click "Backfill all" to repopulate group playlists.
+ * Requires CONFIG.pushToPlaylist = true; otherwise it's a dry run that only reports.
+ */
+function cleanup_playlists() {
+  const apply = CONFIG.pushToPlaylist;
+  const channels = _getSubscribedChannels();
+  const channelToGroup = _buildChannelToGroup();
+
+  // The tag each subscribed channel should currently resolve to.
+  const desiredTags = new Set();
+  channels.forEach(cid => desiredTags.add(channelToGroup[cid] ? `group:${channelToGroup[cid]}` : `channel:${cid}`));
+
+  // Group our playlists by tag.
+  const byTag = {};
+  _fetchMyPlaylistsDetailed().forEach(p => {
+    if (!p.tag) return; // not one of ours — leave it alone
+    (byTag[p.tag] = byTag[p.tag] || []).push(p);
+  });
+
+  const kept = {}; // tag -> playlistId
+  const deleted = [];
+  Object.keys(byTag).forEach(tag => {
+    const list = byTag[tag].sort((a, b) => b.count - a.count); // fullest first
+    const wanted = desiredTags.has(tag);
+    const survivors = wanted ? list.slice(1) : list; // keep list[0] if wanted, else delete all
+    if (wanted) kept[tag] = list[0].id;
+    survivors.forEach(p => {
+      if (apply) _deletePlaylist(p.id);
+      deleted.push({ id: p.id, title: p.title, tag, count: p.count });
+    });
+  });
+
+  // Rebuild the map from survivors so channels point at their kept playlist.
+  const newMap = {};
+  channels.forEach(cid => {
+    const tag = channelToGroup[cid] ? `group:${channelToGroup[cid]}` : `channel:${cid}`;
+    if (kept[tag]) newMap[cid] = kept[tag];
+  });
+  if (apply) _savePlaylistMap(newMap);
+
+  const result = {
+    applied: apply,
+    keptCount: Object.keys(kept).length,
+    deletedCount: deleted.length,
+    deleted,
+    note: apply ? 'Now click “Backfill all” to repopulate group playlists.'
+                : 'Dry run (pushToPlaylist is false) — nothing was deleted.'
+  };
+  console.log('cleanup_playlists', JSON.stringify(result, null, 2));
+  return result;
+}
+
+/** All of the user's playlists with their identity tag and item count. */
+function _fetchMyPlaylistsDetailed(pageToken, acc = []) {
+  const res = YouTube.Playlists.list('snippet,contentDetails', { mine: true, maxResults: 50, pageToken });
+  if (res && res.items) {
+    res.items.forEach(item => acc.push({
+      id: item.id,
+      title: item.snippet.title,
+      tag: _extractPlaylistTag(item.snippet.description),
+      count: item.contentDetails?.itemCount || 0
+    }));
+    if (res.nextPageToken) return _fetchMyPlaylistsDetailed(res.nextPageToken, acc);
+  }
+  return acc;
+}
+
+function _deletePlaylist(playlistId) {
+  YouTube.Playlists.remove(playlistId);
+  console.log(`Deleted playlist ${playlistId}`);
 }
 
 /** Batch channel-id -> title (Channels.list takes up to 50 ids per call). */
