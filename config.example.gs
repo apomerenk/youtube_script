@@ -12,6 +12,14 @@ const CONFIG = {
   // Privacy for auto-created playlists: 'private', 'unlisted', or 'public'.
   playlistPrivacy: 'private',
 
+  // Optional: group multiple channels into one shared playlist (named after the group key).
+  // Useful for channels that post rarely. Entries can be @handles or UC... channel IDs.
+  // Any subscribed channel not listed here still gets its own per-channel playlist.
+  channelGroups: {
+    // 'Golf': ['@GoodGood', '@bobdoessports'],
+    // 'Cooking': ['UCxxxxxxxxxxxxxxxxxxxxxx'],
+  },
+
   // Number of days to look back for subscriptions
   daysBack: 2,
 

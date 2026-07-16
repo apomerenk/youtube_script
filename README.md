@@ -3,6 +3,7 @@ https://zapier.com/app/assets/zaps
 This script automatically:
 - looks at all subscribed channels and pulls non-shorts videos they published in the last x days
 - maintains a dedicated playlist per channel (auto-created and named after the channel)
+- optionally groups several channels into one shared playlist (see `channelGroups` in config)
 - if the video isn't already in that channel's playlist, adds it
 
 steps
