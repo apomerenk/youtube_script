@@ -36,6 +36,11 @@
     .tbl-scroll { overflow-x:auto; }
     .muted { color:var(--muted); font-size:13px; }
     .hint { color:var(--muted); font-size:12px; margin-bottom:14px; }
+    .settings { display:flex; flex-wrap:wrap; gap:16px; align-items:center; }
+    .set { display:flex; align-items:center; gap:7px; font-size:13px; }
+    .set input[type=number] { width:64px; }
+    .set select { font:inherit; background:var(--input); color:var(--fg); border:1px solid var(--border); border-radius:7px; padding:6px 8px; }
+    .note { color:var(--muted); font-size:12px; }
   </style>
 </head>
 <body>
@@ -53,6 +58,21 @@
       <div class="hint" style="margin:10px 0 0;">
         After changing groups: <b>Clean up playlists</b> deletes duplicate/orphaned auto-created
         playlists (your manual playlists are never touched), then <b>Backfill all</b> repopulates them.
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Settings</h2>
+      <div class="settings" id="settings">
+        <label class="set"><input type="checkbox" id="s-push"> Add to playlists <span class="note">(off = dry run, no writes or deletes)</span></label>
+        <label class="set"><input type="checkbox" id="s-shorts"> Include shorts (≤ 60s)</label>
+        <label class="set">Daily look-back <input type="number" id="s-days" min="1"> days</label>
+        <label class="set">Backfill reach <input type="number" id="s-months" min="1"> months / pass</label>
+        <label class="set">New playlist privacy
+          <select id="s-privacy"><option value="private">private</option><option value="unlisted">unlisted</option><option value="public">public</option></select>
+        </label>
+        <label class="set">Title prefix <input type="text" id="s-prefix" placeholder="(none)" style="width:130px"></label>
+        <div><button id="btn-save-settings" class="primary" onclick="saveSettings()">Save settings</button></div>
       </div>
     </div>
 
@@ -152,6 +172,35 @@
         .setChannelGroup(c.id, val);
     }
 
+    function loadSettings() {
+      google.script.run.withSuccessHandler(function(s){
+        document.getElementById('s-push').checked = !!s.pushToPlaylist;
+        document.getElementById('s-shorts').checked = !!s.includeShorts;
+        document.getElementById('s-days').value = s.daysBack;
+        document.getElementById('s-months').value = s.monthsBack;
+        document.getElementById('s-privacy').value = s.playlistPrivacy;
+        document.getElementById('s-prefix').value = s.playlistTitlePrefix || '';
+      }).getSettings();
+    }
+
+    function saveSettings() {
+      var btn = document.getElementById('btn-save-settings');
+      btn.disabled = true;
+      setStatus('Saving settings…', 'running', true);
+      var patch = {
+        pushToPlaylist: document.getElementById('s-push').checked,
+        includeShorts: document.getElementById('s-shorts').checked,
+        daysBack: document.getElementById('s-days').value,
+        monthsBack: document.getElementById('s-months').value,
+        playlistPrivacy: document.getElementById('s-privacy').value,
+        playlistTitlePrefix: document.getElementById('s-prefix').value
+      };
+      google.script.run
+        .withSuccessHandler(function(){ btn.disabled = false; setStatus('Settings saved.', 'ok'); })
+        .withFailureHandler(function(err){ btn.disabled = false; setStatus('Save failed: ' + esc(err && err.message || err), 'err'); })
+        .saveSettings(patch);
+    }
+
     function cleanup() {
       if (busy) return;
       if (!confirm('Delete duplicate and orphaned auto-created playlists to match your current groups? Your manually-created playlists are not touched. Run “Backfill all” afterward to repopulate.')) return;
@@ -179,6 +228,7 @@
         .backfill_old_videos_from_config();
     }
 
+    loadSettings();
     load();
   </script>
 </body>

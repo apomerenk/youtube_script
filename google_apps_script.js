@@ -1,8 +1,23 @@
 /**
  * Google Apps Script version of manageYouTubeSubscriptionsAndPlaylist.
  * Requires enabling Advanced Service: YouTube Data API v3 (Services → add "YouTube").
- * Configuration is stored in config.gs - update values there.
+ *
+ * No config.gs needed: settings live in script properties (YT_SETTINGS) with the
+ * defaults below, and are editable from the web app UI. Groups live in YT_CHANNEL_GROUPS.
  */
+const DEFAULT_SETTINGS = {
+  playlistTitlePrefix: '', // optional prefix for auto-created playlist titles
+  playlistPrivacy: 'private', // 'private' | 'unlisted' | 'public'
+  daysBack: 2, // daily sync look-back window
+  monthsBack: 6, // how far each backfill pass reaches
+  pushToPlaylist: true, // false = dry run (no writes/deletes)
+  includeShorts: false, // include videos <= 60s
+  channelGroups: {} // optional code-seeded groups; the UI store (YT_CHANNEL_GROUPS) overrides
+};
+
+// Loaded once per execution; UI edits (saveSettings) take effect on the next run.
+const CONFIG = _loadSettings();
+
 function manageYouTubeSubscriptionsAndPlaylist() {
   const daysBack = CONFIG.daysBack;
   const pushToPlaylist = CONFIG.pushToPlaylist;
@@ -634,6 +649,36 @@ function doGet() {
   return HtmlService.createHtmlOutputFromFile('index')
     .setTitle('YouTube Playlist Groups')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+}
+
+/** Current settings (defaults merged with the persisted YT_SETTINGS store), for the UI. */
+function getSettings() {
+  return _loadSettings();
+}
+
+/** Persist a partial settings update from the UI; returns the saved (validated) settings. */
+function saveSettings(patch) {
+  const merged = Object.assign({}, _loadSettings(), patch || {});
+  const clean = {
+    playlistTitlePrefix: String(merged.playlistTitlePrefix || ''),
+    playlistPrivacy: ['private', 'unlisted', 'public'].indexOf(merged.playlistPrivacy) >= 0
+      ? merged.playlistPrivacy : DEFAULT_SETTINGS.playlistPrivacy,
+    daysBack: Math.max(1, parseInt(merged.daysBack, 10) || DEFAULT_SETTINGS.daysBack),
+    monthsBack: Math.max(1, parseInt(merged.monthsBack, 10) || DEFAULT_SETTINGS.monthsBack),
+    pushToPlaylist: !!merged.pushToPlaylist,
+    includeShorts: !!merged.includeShorts
+  };
+  PropertiesService.getUserProperties().setProperty('YT_SETTINGS', JSON.stringify(clean));
+  return clean;
+}
+
+function _loadSettings() {
+  const raw = PropertiesService.getUserProperties().getProperty('YT_SETTINGS');
+  let saved = {};
+  if (raw) {
+    try { saved = JSON.parse(raw) || {}; } catch (e) { console.error('Failed to parse YT_SETTINGS, using defaults.', e); }
+  }
+  return Object.assign({}, DEFAULT_SETTINGS, saved);
 }
 
 /**
