@@ -1,20 +1,12 @@
-To be used with zapier.
-https://zapier.com/app/assets/zaps
-This script automatically:
+A Google Apps Script that keeps your YouTube subscriptions organized into playlists.
+
+It automatically:
 - looks at all subscribed channels and pulls non-shorts videos they published in the last x days
 - maintains a dedicated playlist per channel (auto-created and named after the channel)
-- optionally groups several channels into one shared playlist (see `channelGroups` in config)
+- optionally groups several channels into one shared playlist (managed in the web UI)
 - if the video isn't already in that channel's playlist, adds it
 
-steps
-1. set up a zap
-2. set it to trigger every day
-3. set up a custom action
-4. copy this script into the custom action
-5. set the playlist id in the custom action
-6. let it run every morning
-
-Google Apps Script version (YouTube Advanced Service)
+Setup (YouTube Advanced Service)
 - Two files only: `code.gs` and `index.html`. No `config.gs` — all settings live in script properties with sensible defaults baked into the code, and are editable from the web UI.
 - Setup steps:
   1) In Apps Script, paste `code.gs` into the project's default `Code.gs` file. (If you have an old `config.gs` defining `CONFIG`, delete it — the code now defines its own defaults and a duplicate `CONFIG` will error.)
