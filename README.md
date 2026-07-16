@@ -15,9 +15,9 @@ steps
 6. let it run every morning
 
 Google Apps Script version (YouTube Advanced Service)
-- Two files only: `google_apps_script.js` and `index.html`. No `config.gs` — all settings live in script properties with sensible defaults baked into the code, and are editable from the web UI.
+- Two files only: `code.gs` and `index.html`. No `config.gs` — all settings live in script properties with sensible defaults baked into the code, and are editable from the web UI.
 - Setup steps:
-  1) In Apps Script, paste `google_apps_script.js` into the project. (If you have an old `config.gs` defining `CONFIG`, delete it — the code now defines its own defaults and a duplicate `CONFIG` will error.)
+  1) In Apps Script, paste `code.gs` into the project's default `Code.gs` file. (If you have an old `config.gs` defining `CONFIG`, delete it — the code now defines its own defaults and a duplicate `CONFIG` will error.)
   2) Services (puzzle-piece icon) → Add “YouTube Data API v3”.
   3) Save the project; run `manageYouTubeSubscriptionsAndPlaylist` once to authorize.
   4) Triggers (clock icon) → Add Trigger:
