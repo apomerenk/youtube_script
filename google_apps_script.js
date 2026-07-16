@@ -353,22 +353,25 @@ function _addToPlaylist(playlistId, id, title, pushToPlaylist, output, retry = 0
 
 function _fetchChannelVideosSince(channelId, sinceIso, untilIso = null, retry = 0) {
   const videos = [];
-  const untilDate = untilIso ? new Date(untilIso) : null;
   const maxRetries = 6;
   const quotaDelayMs = 5000;
   let pageToken;
-  let shouldContinue = true;
-  
+
   do {
     try {
-      const search = YouTube.Search.list('id', {
+      const params = {
         channelId,
         publishedAfter: sinceIso,
         maxResults: 50,
         type: 'video',
         order: 'date',
         pageToken
-      });
+      };
+      // Bound the upper end server-side. Results are newest-first, so we can't stop early
+      // on the first in-range video; publishedBefore lets the API exclude the newer ones.
+      if (untilIso) params.publishedBefore = untilIso;
+
+      const search = YouTube.Search.list('id', params);
       if (!search || !search.items || !search.items.length) break;
 
       const ids = search.items.map(it => it.id.videoId).filter(Boolean);
@@ -376,15 +379,6 @@ function _fetchChannelVideosSince(channelId, sinceIso, untilIso = null, retry = 
         const details = YouTube.Videos.list('contentDetails,snippet', { id: ids.join(',') });
         if (details && details.items) {
           for (const item of details.items) {
-            // If untilIso is provided, filter out videos at or after that date
-            if (untilDate) {
-              const publishedAt = new Date(item.snippet.publishedAt);
-              if (publishedAt >= untilDate) {
-                shouldContinue = false;
-                break;
-              }
-            }
-            
             const duration = item.contentDetails?.duration || '';
             videos.push({
               id: item.id,
@@ -394,8 +388,8 @@ function _fetchChannelVideosSince(channelId, sinceIso, untilIso = null, retry = 
           }
         }
       }
-      
-      pageToken = shouldContinue ? search.nextPageToken : null;
+
+      pageToken = search.nextPageToken;
       retry = 0; // Reset retry counter on success
     } catch (err) {
       if (_isQuotaError(err) && retry < maxRetries) {
