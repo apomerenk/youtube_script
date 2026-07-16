@@ -3,139 +3,164 @@
 <head>
   <base target="_top">
   <style>
-    :root { --bg:#0f1115; --card:#181b22; --border:#2a2f3a; --fg:#e6e8ec; --muted:#9aa3b2; --accent:#ff4444; --ok:#3fb950; --warn:#d29922; }
+    :root { --bg:#0f1115; --card:#181b22; --border:#2a2f3a; --fg:#e6e8ec; --muted:#9aa3b2; --accent:#ff4444; --ok:#3fb950; --warn:#d29922; --input:#0b0d11; }
     * { box-sizing: border-box; }
     body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--fg); line-height:1.45; }
-    .wrap { max-width:900px; margin:0 auto; padding:20px 16px 60px; }
+    .wrap { max-width:920px; margin:0 auto; padding:20px 16px 60px; }
     h1 { font-size:20px; margin:0 0 4px; }
-    .sub { color:var(--muted); font-size:13px; margin-bottom:20px; }
+    .sub { color:var(--muted); font-size:13px; margin-bottom:18px; }
     .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:16px; }
-    .actions { display:flex; flex-wrap:wrap; gap:10px; }
-    button { font:inherit; font-weight:600; color:#fff; background:var(--accent); border:0; border-radius:8px; padding:10px 16px; cursor:pointer; }
-    button.secondary { background:#2a2f3a; }
+    .row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+    button { font:inherit; font-weight:600; color:#fff; background:#2a2f3a; border:0; border-radius:8px; padding:9px 14px; cursor:pointer; }
+    button.primary { background:var(--accent); }
     button:disabled { opacity:.5; cursor:not-allowed; }
-    #status { margin-top:12px; font-size:13px; min-height:18px; }
+    #status { font-size:13px; min-height:18px; margin-left:auto; }
     #status.running { color:var(--warn); }
     #status.ok { color:var(--ok); }
     #status.err { color:var(--accent); }
     .spinner { display:inline-block; width:12px; height:12px; border:2px solid var(--muted); border-top-color:transparent; border-radius:50%; animation:spin .7s linear infinite; vertical-align:middle; margin-right:6px; }
     @keyframes spin { to { transform:rotate(360deg); } }
-    .counts { display:flex; flex-wrap:wrap; gap:16px; margin:4px 0 10px; }
-    .count b { font-size:20px; display:block; }
-    .count span { color:var(--muted); font-size:12px; }
-    h2 { font-size:14px; margin:0 0 10px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+    h2 { font-size:14px; margin:0 0 12px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+    .chips { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px; }
+    .chip { background:#2a2f3a; border-radius:20px; padding:4px 12px; font-size:12px; }
+    .chip b { color:var(--fg); } .chip span { color:var(--muted); }
     table { width:100%; border-collapse:collapse; font-size:13px; }
-    th,td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--border); vertical-align:top; }
+    th,td { text-align:left; padding:8px; border-bottom:1px solid var(--border); vertical-align:middle; }
     th { color:var(--muted); font-weight:600; }
-    a { color:#58a6ff; text-decoration:none; }
-    a:hover { text-decoration:underline; }
-    .tag { display:inline-block; background:#2a2f3a; color:var(--muted); border-radius:6px; padding:1px 7px; font-size:11px; }
+    td.ch { font-weight:600; }
+    input[type=text] { font:inherit; background:var(--input); color:var(--fg); border:1px solid var(--border); border-radius:7px; padding:7px 9px; width:170px; }
+    input[type=text]:focus { outline:none; border-color:#58a6ff; }
+    .saved { color:var(--ok); font-size:12px; margin-left:8px; opacity:0; transition:opacity .2s; }
+    .saved.show { opacity:1; }
+    a { color:#58a6ff; text-decoration:none; } a:hover { text-decoration:underline; }
     .tbl-scroll { overflow-x:auto; }
-    pre { background:#0b0d11; border:1px solid var(--border); border-radius:8px; padding:12px; overflow:auto; font-size:12px; color:var(--muted); }
-    details summary { cursor:pointer; color:var(--muted); font-size:13px; margin-top:6px; }
     .muted { color:var(--muted); font-size:13px; }
+    .hint { color:var(--muted); font-size:12px; margin-bottom:14px; }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>YouTube Playlist Sync</h1>
-    <div class="sub">One playlist per subscribed channel (or per configured group).</div>
+    <h1>YouTube Playlist Groups</h1>
+    <div class="sub">Assign channels to a shared playlist, or leave them ungrouped for their own.</div>
 
     <div class="card">
-      <div class="actions">
-        <button id="btn-sync" onclick="run('manageYouTubeSubscriptionsAndPlaylist','Daily sync')">▶ Run daily sync</button>
-        <button id="btn-backfill" class="secondary" onclick="run('backfill_old_videos_from_config','Backfill')">⏪ Backfill all</button>
-        <button id="btn-state" class="secondary" onclick="loadState()">↻ Refresh state</button>
+      <div class="row">
+        <button id="btn-refresh" onclick="load()">↻ Refresh</button>
+        <button id="btn-backfill" onclick="backfill()">⏪ Backfill all</button>
+        <span id="status"></span>
       </div>
-      <div id="status"></div>
-    </div>
-
-    <div class="card" id="result-card" style="display:none;">
-      <h2>Last run</h2>
-      <div class="counts" id="counts"></div>
-      <div id="added-wrap"></div>
-      <details><summary>Raw JSON</summary><pre id="result-json"></pre></details>
     </div>
 
     <div class="card">
-      <h2>Channel state</h2>
-      <div id="state-body"><span class="muted">Click “Refresh state” to load.</span></div>
-    </div>
-
-    <div class="card">
-      <h2>Config</h2>
-      <pre id="config">loading…</pre>
+      <h2>Groups</h2>
+      <div class="hint">
+        Type a group name to add a channel to it (channels sharing a name share one playlist).
+        Reuse an existing name from the suggestions, or clear the box to give a channel its own playlist.
+        Changes save automatically and apply to <em>future</em> videos — already-added videos stay in their current playlist.
+      </div>
+      <div class="chips" id="chips"></div>
+      <div id="channels"><span class="muted">Loading channels…</span></div>
     </div>
   </div>
 
+  <datalist id="group-options"></datalist>
+
   <script>
     var busy = false;
-    function setBusy(b, msg, cls) {
-      busy = b;
-      ['btn-sync','btn-backfill','btn-state'].forEach(function(id){ document.getElementById(id).disabled = b; });
+    function setStatus(msg, cls, spin) {
       var s = document.getElementById('status');
       s.className = cls || '';
-      s.innerHTML = (b ? '<span class="spinner"></span>' : '') + (msg || '');
+      s.innerHTML = (spin ? '<span class="spinner"></span>' : '') + (msg || '');
     }
-    function esc(x){ return String(x==null?'':x).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];}); }
+    function setBusy(b) {
+      busy = b;
+      ['btn-refresh','btn-backfill'].forEach(function(id){ document.getElementById(id).disabled = b; });
+    }
+    function esc(x){ return String(x==null?'':x).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
     function plUrl(id){ return 'https://www.youtube.com/playlist?list=' + encodeURIComponent(id); }
 
-    function run(fnName, label) {
+    var channels = [];
+
+    function load() {
       if (busy) return;
-      setBusy(true, label + ' running… (this can take a few minutes; don’t close the tab)', 'running');
+      setBusy(true); setStatus('Loading…', 'running', true);
       google.script.run
-        .withSuccessHandler(function(res){ setBusy(false, label + ' done.', 'ok'); showResult(res); loadState(); })
-        .withFailureHandler(function(err){ setBusy(false, label + ' failed: ' + esc(err && err.message || err), 'err'); })
-        [fnName]();
+        .withSuccessHandler(function(data){ setBusy(false); setStatus('', 'ok'); channels = data.channels || []; render(data); })
+        .withFailureHandler(function(err){ setBusy(false); setStatus('Load failed: ' + esc(err && err.message || err), 'err'); })
+        .getGroupsUi();
     }
 
-    function showResult(res) {
-      document.getElementById('result-card').style.display = 'block';
-      document.getElementById('result-json').textContent = JSON.stringify(res, null, 2);
-      var groups = [['added','added'],['alreadyInPlaylist','already in'],['shorts','shorts'],['error','errors'],['playlistsCreated','playlists made']];
-      var html = groups.map(function(g){
-        var n = (res[g[0]] || []).length;
-        return '<div class="count"><b>' + n + '</b><span>' + g[1] + '</span></div>';
+    function render(data) {
+      // datalist of existing groups
+      document.getElementById('group-options').innerHTML =
+        (data.groups || []).map(function(g){ return '<option value="' + esc(g) + '">'; }).join('');
+      renderChips();
+      // channel rows
+      var rows = channels.map(function(c, i){
+        var pl = c.playlistId
+          ? '<a href="' + plUrl(c.playlistId) + '" target="_blank">open</a>' : '<span class="muted">—</span>';
+        return '<tr>' +
+          '<td class="ch">' + esc(c.name) + '</td>' +
+          '<td><input type="text" list="group-options" value="' + esc(c.group) + '" ' +
+            'placeholder="(own playlist)" data-i="' + i + '" onchange="save(this)">' +
+            '<span class="saved" id="saved-' + i + '">saved ✓</span></td>' +
+          '<td>' + pl + '</td>' +
+          '</tr>';
       }).join('');
-      document.getElementById('counts').innerHTML = html;
-      var added = res.added || [];
-      document.getElementById('added-wrap').innerHTML = added.length
-        ? '<table><tr><th>Added video</th></tr>' + added.map(function(v){
-            return '<tr><td><a href="https://youtu.be/' + esc(v.id) + '" target="_blank">' + esc(v.title) + '</a></td></tr>';
-          }).join('') + '</table>'
-        : '<div class="muted">No new videos added.</div>';
+      document.getElementById('channels').innerHTML =
+        '<div class="tbl-scroll"><table><tr><th>Channel</th><th>Group</th><th>Playlist</th></tr>' + rows + '</table></div>';
     }
 
-    function loadState() {
+    function renderChips() {
+      var counts = {};
+      channels.forEach(function(c){ if (c.group) counts[c.group] = (counts[c.group]||0)+1; });
+      var names = Object.keys(counts).sort();
+      var ungrouped = channels.filter(function(c){ return !c.group; }).length;
+      var html = names.map(function(n){
+        return '<span class="chip"><b>' + esc(n) + '</b> <span>' + counts[n] + '</span></span>';
+      }).join('');
+      html += '<span class="chip"><span>ungrouped</span> ' + ungrouped + '</span>';
+      document.getElementById('chips').innerHTML = html;
+    }
+
+    function save(input) {
+      var i = +input.getAttribute('data-i');
+      var c = channels[i];
+      var val = input.value.trim();
+      if (val === (c.group || '')) return;
+      input.disabled = true;
+      setStatus('Saving…', 'running', true);
+      google.script.run
+        .withSuccessHandler(function(res){
+          input.disabled = false;
+          c.group = res.group;
+          var badge = document.getElementById('saved-' + i);
+          badge.className = 'saved show';
+          setTimeout(function(){ badge.className = 'saved'; }, 1500);
+          setStatus(res.rehomed ? 'Saved — new videos will use the updated playlist.' : 'Saved.', 'ok');
+          renderChips();
+        })
+        .withFailureHandler(function(err){
+          input.disabled = false; input.value = c.group || '';
+          setStatus('Save failed: ' + esc(err && err.message || err), 'err');
+        })
+        .setChannelGroup(c.id, val);
+    }
+
+    function backfill() {
       if (busy) return;
-      setBusy(true, 'Loading state…', 'running');
+      if (!confirm('Backfill older videos for all channels into their playlists? This can take a few minutes.')) return;
+      setBusy(true); setStatus('Backfilling… (don’t close the tab)', 'running', true);
       google.script.run
-        .withSuccessHandler(function(st){ setBusy(false, '', 'ok'); renderState(st); })
-        .withFailureHandler(function(err){ setBusy(false, 'State load failed: ' + esc(err && err.message || err), 'err'); })
-        .view_channel_state();
+        .withSuccessHandler(function(res){
+          setBusy(false);
+          setStatus('Backfill done: added ' + ((res.added||[]).length) + ', skipped ' + ((res.shorts||[]).length) + ' shorts, ' + ((res.error||[]).length) + ' errors.', 'ok');
+        })
+        .withFailureHandler(function(err){ setBusy(false); setStatus('Backfill failed: ' + esc(err && err.message || err), 'err'); })
+        .backfill_old_videos_from_config();
     }
 
-    function renderState(st) {
-      var details = st.channelDetails || {};
-      var ids = Object.keys(details);
-      var head = '<div class="muted" style="margin-bottom:10px;">' +
-        esc(st.totalChannels) + ' channels · ' + esc(st.channelsWithPlaylist) + ' with playlist · ' +
-        esc(st.channelsWithState) + ' with state</div>';
-      var rows = ids.map(function(id){
-        var d = details[id];
-        var pl = d.playlistId && d.playlistId !== 'Not created'
-          ? '<a href="' + plUrl(d.playlistId) + '" target="_blank">open</a>' : '<span class="muted">—</span>';
-        var grp = d.group ? '<span class="tag">' + esc(d.group) + '</span>' : '';
-        var oldest = d.oldestDate && d.oldestDate.length > 10 ? d.oldestDate.slice(0,10) : d.oldestDate;
-        return '<tr><td>' + esc(d.name) + ' ' + grp + '</td><td class="muted">' + esc(oldest) + '</td><td>' + pl + '</td></tr>';
-      }).join('');
-      document.getElementById('state-body').innerHTML = head +
-        '<div class="tbl-scroll"><table><tr><th>Channel</th><th>Oldest pulled</th><th>Playlist</th></tr>' + rows + '</table></div>';
-    }
-
-    google.script.run.withSuccessHandler(function(cfg){
-      document.getElementById('config').textContent = JSON.stringify(cfg, null, 2);
-    }).getConfigForUi();
+    load();
   </script>
 </body>
 </html>

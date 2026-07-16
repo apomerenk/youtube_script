@@ -26,8 +26,11 @@ Google Apps Script version (YouTube Advanced Service)
      - Event source: Time-driven → Day timer → pick a daily window.
   6) Save the trigger; the script will run daily.
 
-Optional web UI
-- File: `index.html` (add it to the same Apps Script project).
-- Deploy → New deployment → type "Web app" → execute as **me**, access **Only myself** → Deploy.
-- Open the web app URL to get buttons for "Run daily sync" / "Backfill all", a live channel-state table (with playlist links), and a read-only view of your config. Works on mobile.
+Optional web UI (group manager)
+- Add `index.html` to the same Apps Script project: File → New → HTML, name it exactly `index`, paste the contents of `index.html`.
+- Make sure the latest `google_apps_script.js` (which defines `doGet`) is pasted into the project too.
+- Deploy → New deployment → type "Web app" → execute as **me**, access **Only myself** → Deploy, then open the web app URL (works on mobile).
+- The UI lists every subscribed channel and lets you assign each to a group by name (channels sharing a name share one playlist); clearing the box gives a channel its own playlist. Assignments save automatically to script properties and override `CONFIG.channelGroups`. There's also a "Backfill all" button.
+- Group changes apply to *future* videos; already-added videos stay in their current playlist.
+- Redeploying after code changes: if you see "Script function not found: doGet", the deployment is serving old code. Deploy → Manage deployments → edit (pencil) → Version: **New version** → Deploy. (New pastes alone don't update an existing web-app deployment.)
 - Note: long backfills can hit Apps Script's ~6 min execution limit; if a run times out, just run it again — progress is saved incrementally, and re-running picks up where it left off.

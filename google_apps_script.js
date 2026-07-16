@@ -330,15 +330,25 @@ function _resolveChannelId(input) {
   return null;
 }
 
-/** Build a { [channelId]: groupName } lookup from CONFIG.channelGroups. */
+/**
+ * Build a { [channelId]: groupName } lookup. CONFIG.channelGroups seeds the base; the
+ * UI-managed store (YT_CHANNEL_GROUPS) is overlaid on top and wins, with an empty-string
+ * value acting as an explicit "ungrouped" tombstone that removes a CONFIG default.
+ */
 function _buildChannelToGroup() {
-  const groups = CONFIG.channelGroups || {};
   const map = {};
+  const groups = CONFIG.channelGroups || {};
   Object.keys(groups).forEach(groupName => {
     (groups[groupName] || []).forEach(entry => {
       const cid = _resolveChannelId(entry);
       if (cid) map[cid] = groupName;
     });
+  });
+
+  const persisted = _loadChannelGroups();
+  Object.keys(persisted).forEach(cid => {
+    const g = persisted[cid];
+    if (g) map[cid] = g; else delete map[cid];
   });
   return map;
 }
@@ -574,17 +584,93 @@ function _savePlaylistMap(map) {
   props.setProperty('YT_PLAYLIST_MAP', JSON.stringify(map));
 }
 
+// === UI-managed channel groups ({ [channelId]: groupName }, '' = explicitly ungrouped) ===
+function _loadChannelGroups() {
+  const props = PropertiesService.getUserProperties();
+  const raw = props.getProperty('YT_CHANNEL_GROUPS');
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw) || {};
+  } catch (e) {
+    console.error('Failed to parse channel groups, resetting.', e);
+    return {};
+  }
+}
+
+function _saveChannelGroups(groups) {
+  const props = PropertiesService.getUserProperties();
+  props.setProperty('YT_CHANNEL_GROUPS', JSON.stringify(groups));
+}
+
 // === Web app UI ===
 // Deploy: Deploy > New deployment > Web app (execute as me, access: only myself).
-// Opens index.html; the buttons there call the functions below via google.script.run.
+// Opens the HTML file named "index"; it calls the functions below via google.script.run.
 function doGet() {
   return HtmlService.createHtmlOutputFromFile('index')
-    .setTitle('YouTube Playlist Sync')
+    .setTitle('YouTube Playlist Groups')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
-/** Current config, for read-only display in the UI (no secrets live here). */
-function getConfigForUi() {
-  return CONFIG;
+/**
+ * Data for the group-management UI: every subscribed channel with its current group
+ * assignment and playlist, plus the list of existing group names.
+ */
+function getGroupsUi() {
+  const channels = _getSubscribedChannels();
+  const titles = _getChannelTitles(channels);
+  const channelToGroup = _buildChannelToGroup();
+  const playlistMap = _loadPlaylistMap();
+
+  const list = channels.map(id => ({
+    id,
+    name: titles[id] || id,
+    group: channelToGroup[id] || '',
+    playlistId: playlistMap[id] || ''
+  }));
+  list.sort((a, b) => (a.group || '~~').localeCompare(b.group || '~~') || a.name.localeCompare(b.name));
+
+  const groups = Array.from(new Set(Object.values(channelToGroup))).sort();
+  return { channels: list, groups };
+}
+
+/**
+ * Assign a channel to a group (empty string = no group). Persists the change and, if the
+ * group actually changed, drops the channel's stored playlist so future syncs route its
+ * new videos to the correct (group or per-channel) playlist. Existing videos already added
+ * to the old playlist stay there.
+ */
+function setChannelGroup(channelId, groupName) {
+  const g = (groupName || '').trim();
+  const before = _buildChannelToGroup()[channelId] || '';
+
+  const store = _loadChannelGroups();
+  store[channelId] = g; // '' is kept as an explicit "ungrouped" tombstone (overrides CONFIG)
+  _saveChannelGroups(store);
+
+  let rehomed = false;
+  if (g !== before) {
+    const map = _loadPlaylistMap();
+    if (map[channelId]) {
+      delete map[channelId];
+      _savePlaylistMap(map);
+      rehomed = true;
+    }
+  }
+  return { ok: true, channelId, group: g, rehomed };
+}
+
+/** Batch channel-id -> title (Channels.list takes up to 50 ids per call). */
+function _getChannelTitles(ids) {
+  const out = {};
+  for (let i = 0; i < ids.length; i += 50) {
+    const batch = ids.slice(i, i + 50);
+    try {
+      const res = YouTube.Channels.list('snippet', { id: batch.join(','), maxResults: 50 });
+      (res.items || []).forEach(it => { out[it.id] = it.snippet.title; });
+    } catch (err) {
+      console.error(`Error fetching channel titles: ${err}`);
+    }
+  }
+  return out;
 }
 
