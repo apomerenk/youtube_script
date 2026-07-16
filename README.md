@@ -32,3 +32,4 @@ Web UI (group manager + settings)
 - Group changes apply to *future* videos; already-added videos stay in their current playlist until you clean up + backfill.
 - Redeploying after code changes: if you see "Script function not found: doGet", the deployment is serving old code. Deploy → Manage deployments → edit (pencil) → Version: **New version** → Deploy. (New pastes alone don't update an existing web-app deployment.)
 - Note: long backfills can hit Apps Script's ~6 min execution limit; if a run times out, just run it again — progress is saved incrementally, and re-running picks up where it left off.
+- Quota: adding a video costs 50 of the default 10,000/day API units (~200 adds/day). When quota runs out the run stops cleanly, saves progress, and reports it — re-run after it resets (midnight Pacific) to keep going. Reads use each channel's uploads playlist (1 unit/page) rather than Search (100 units/page) to leave as much quota as possible for adds.

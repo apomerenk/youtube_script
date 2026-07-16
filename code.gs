@@ -38,23 +38,35 @@ function manageYouTubeSubscriptionsAndPlaylist() {
 
   const ctx = { channelState, playlistMap, pushToPlaylist, includeShorts, daysBack, getExistingPlaylists, channelToGroup, output };
 
-  channels.forEach(channelId => {
-    try {
-      _processChannel(channelId, ctx);
-    } catch (err) {
-      // A mapped playlist may have been deleted since it was stored. Drop it, recreate, and retry once.
-      if (_isPlaylistNotFoundError(err) && playlistMap[channelId]) {
-        console.log(`Playlist ${playlistMap[channelId]} for channel ${channelId} not found; dropping from map and recreating.`);
-        _invalidatePlaylist(channelId, playlistMap, existingPlaylists, channelToGroup);
+  let quotaExceeded = false;
+  try {
+    channels.forEach(channelId => {
+      try {
         _processChannel(channelId, ctx);
-      } else {
-        throw err;
+      } catch (err) {
+        if (err && err.quotaExceeded) throw err; // stop the whole run
+        // A mapped playlist may have been deleted since it was stored. Drop it, recreate, and retry once.
+        if (_isPlaylistNotFoundError(err) && playlistMap[channelId]) {
+          console.log(`Playlist ${playlistMap[channelId]} for channel ${channelId} not found; dropping from map and recreating.`);
+          _invalidatePlaylist(channelId, playlistMap, existingPlaylists, channelToGroup);
+          _processChannel(channelId, ctx);
+        } else {
+          throw err;
+        }
       }
+    });
+  } catch (err) {
+    if (err && err.quotaExceeded) {
+      quotaExceeded = true;
+      console.warn('YouTube API quota exceeded — stopping early. Progress saved; it resumes on the next run (after quota resets).');
+    } else {
+      throw err;
     }
-  });
+  }
 
   _savePlaylistMap(playlistMap);
   _saveChannelState(channelState);
+  output.quotaExceeded = quotaExceeded;
   if (output.error.length) {
     throw new Error(`Error adding to playlist: ${JSON.stringify(output.error)}`);
   }
@@ -131,30 +143,43 @@ function backfill_old_videos_from_config() {
 
   const ctx = { playlistMap, pushToPlaylist, includeShorts, getExistingPlaylists, channelToGroup, output };
 
-  channels.forEach(channelId => {
-    try {
-      _backfillChannel(channelId, monthsBack, ctx);
-    } catch (err) {
-      // A mapped playlist may have been deleted since it was stored. Drop it, recreate, and retry once.
-      if (_isPlaylistNotFoundError(err) && playlistMap[channelId]) {
-        console.log(`Playlist ${playlistMap[channelId]} for channel ${channelId} not found; dropping from map and recreating.`);
-        _invalidatePlaylist(channelId, playlistMap, existingPlaylists, channelToGroup);
-        try {
-          _backfillChannel(channelId, monthsBack, ctx);
-        } catch (retryErr) {
-          console.error(`Backfill failed for ${channelId} after retry: ${retryErr}`);
-          output.error.push({ channelId, error: { message: String(retryErr) } });
+  let quotaExceeded = false;
+  try {
+    channels.forEach(channelId => {
+      try {
+        _backfillChannel(channelId, monthsBack, ctx);
+      } catch (err) {
+        if (err && err.quotaExceeded) throw err; // stop the whole pass
+        // A mapped playlist may have been deleted since it was stored. Drop it, recreate, and retry once.
+        if (_isPlaylistNotFoundError(err) && playlistMap[channelId]) {
+          console.log(`Playlist ${playlistMap[channelId]} for channel ${channelId} not found; dropping from map and recreating.`);
+          _invalidatePlaylist(channelId, playlistMap, existingPlaylists, channelToGroup);
+          try {
+            _backfillChannel(channelId, monthsBack, ctx);
+          } catch (retryErr) {
+            if (retryErr && retryErr.quotaExceeded) throw retryErr;
+            console.error(`Backfill failed for ${channelId} after retry: ${retryErr}`);
+            output.error.push({ channelId, error: { message: String(retryErr) } });
+          }
+        } else {
+          // Don't let one channel abort the whole pass; record and continue.
+          console.error(`Backfill failed for ${channelId}: ${err}`);
+          output.error.push({ channelId, error: { message: String(err) } });
         }
-      } else {
-        // Don't let one channel abort the whole pass; record and continue.
-        console.error(`Backfill failed for ${channelId}: ${err}`);
-        output.error.push({ channelId, error: { message: String(err) } });
       }
+    });
+  } catch (err) {
+    if (err && err.quotaExceeded) {
+      quotaExceeded = true;
+      console.warn('YouTube API quota exceeded — stopping backfill early. Progress saved; re-run later (after quota resets) to continue further back.');
+    } else {
+      throw err;
     }
-  });
+  }
 
   _savePlaylistMap(playlistMap);
-  if (output.error.length) {
+  output.quotaExceeded = quotaExceeded;
+  if (output.error.length && !quotaExceeded) {
     throw new Error(`Errors during backfill: ${JSON.stringify(output.error)}`);
   }
   console.log('Done backfill_old_videos_from_config', JSON.stringify(output, null, 2));
@@ -430,11 +455,17 @@ function _isPlaylistNotFoundError(err) {
   return errStr.includes('playlist') && errStr.includes('cannot be found');
 }
 
+/** Sentinel used to abort a run when the daily API quota is exhausted (retrying is futile). */
+function _quotaError() {
+  const e = new Error('YouTube API daily quota exceeded');
+  e.quotaExceeded = true;
+  return e;
+}
+
 function _addToPlaylist(playlistId, id, title, pushToPlaylist, output, retry = 0) {
   if (!pushToPlaylist) return;
-  const maxRetries = 6;
+  const maxRetries = 3;
   const baseDelayMs = 2000;
-  const quotaDelayMs = 5000; // 5 seconds for quota errors
 
   try {
     const body = {
@@ -448,13 +479,14 @@ function _addToPlaylist(playlistId, id, title, pushToPlaylist, output, retry = 0
     output.added.push({ title, id });
     return res;
   } catch (err) {
-    const isQuota = _isQuotaError(err);
-    const isConflict = err?.response?.status === 409;
-    
-    if ((isConflict || isQuota) && retry < maxRetries) {
-      const delay = isQuota ? quotaDelayMs * (retry + 1) : baseDelayMs * Math.pow(2, retry);
-      const errorType = isQuota ? 'quota' : 'conflict';
-      console.log(`Retrying ${title} after ${delay}ms (${errorType} error, attempt ${retry + 1}/${maxRetries})`);
+    // Quota is a per-day cap; retrying in-run never succeeds and just burns the execution
+    // budget. Abort the whole run so progress is saved and it can resume when quota resets.
+    if (_isQuotaError(err)) throw _quotaError();
+
+    // 409 conflicts are transient (concurrent insert / already-adding); a few short retries help.
+    if (err?.response?.status === 409 && retry < maxRetries) {
+      const delay = baseDelayMs * Math.pow(2, retry);
+      console.log(`Retrying ${title} after ${delay}ms (conflict, attempt ${retry + 1}/${maxRetries})`);
       Utilities.sleep(delay);
       return _addToPlaylist(playlistId, id, title, pushToPlaylist, output, retry + 1);
     }
@@ -463,59 +495,57 @@ function _addToPlaylist(playlistId, id, title, pushToPlaylist, output, retry = 0
   }
 }
 
-function _fetchChannelVideosSince(channelId, sinceIso, untilIso = null, retry = 0) {
-  const videos = [];
-  const maxRetries = 6;
-  const quotaDelayMs = 5000;
+/**
+ * Videos published in [sinceIso, untilIso) for a channel, newest-first.
+ * Reads the channel's uploads playlist (contentDetails: 1 quota unit/page) instead of
+ * Search (100 units/page), which is the main quota saver. Durations come from a batched
+ * Videos.list (1 unit/50 ids). Aborts the run on quota rather than retrying.
+ */
+function _fetchChannelVideosSince(channelId, sinceIso, untilIso = null) {
+  const uploadsId = 'UU' + channelId.slice(2); // uploads playlist id == channel id with UC->UU
+  const since = new Date(sinceIso);
+  const until = untilIso ? new Date(untilIso) : null;
+  const videoIds = [];
   let pageToken;
 
+  collect:
   do {
+    let res;
     try {
-      const params = {
-        channelId,
-        publishedAfter: sinceIso,
-        maxResults: 50,
-        type: 'video',
-        order: 'date',
-        pageToken
-      };
-      // Bound the upper end server-side. Results are newest-first, so we can't stop early
-      // on the first in-range video; publishedBefore lets the API exclude the newer ones.
-      if (untilIso) params.publishedBefore = untilIso;
-
-      const search = YouTube.Search.list('id', params);
-      if (!search || !search.items || !search.items.length) break;
-
-      const ids = search.items.map(it => it.id.videoId).filter(Boolean);
-      if (ids.length) {
-        const details = YouTube.Videos.list('contentDetails,snippet', { id: ids.join(',') });
-        if (details && details.items) {
-          for (const item of details.items) {
-            const duration = item.contentDetails?.duration || '';
-            videos.push({
-              id: item.id,
-              title: item.snippet?.title || 'Unknown Title',
-              durationSeconds: _parseDurationSeconds(duration)
-            });
-          }
-        }
-      }
-
-      pageToken = search.nextPageToken;
-      retry = 0; // Reset retry counter on success
+      res = YouTube.PlaylistItems.list('contentDetails', { playlistId: uploadsId, maxResults: 50, pageToken });
     } catch (err) {
-      if (_isQuotaError(err) && retry < maxRetries) {
-        const delay = quotaDelayMs * (retry + 1);
-        console.log(`Quota error fetching videos, retrying after ${delay}ms (attempt ${retry + 1}/${maxRetries})`);
-        Utilities.sleep(delay);
-        retry++;
-        continue; // Retry the same page
-      }
-      console.error(`Error fetching videos for channel ${channelId}: ${err}`);
-      throw err; // Re-throw if not a quota error or max retries reached
+      if (_isQuotaError(err)) throw _quotaError();
+      if (_isPlaylistNotFoundError(err)) { console.warn(`No uploads playlist for ${channelId}`); break; }
+      throw err;
     }
+    if (!res || !res.items || !res.items.length) break;
+
+    for (const item of res.items) {
+      const publishedAt = new Date(item.contentDetails.videoPublishedAt);
+      if (publishedAt < since) break collect;          // older than window; done (newest-first)
+      if (until && publishedAt >= until) continue;      // newer than window; skip
+      videoIds.push(item.contentDetails.videoId);
+    }
+    pageToken = res.nextPageToken;
   } while (pageToken);
-  
+
+  const videos = [];
+  for (let i = 0; i < videoIds.length; i += 50) {
+    let details;
+    try {
+      details = YouTube.Videos.list('contentDetails,snippet', { id: videoIds.slice(i, i + 50).join(','), maxResults: 50 });
+    } catch (err) {
+      if (_isQuotaError(err)) throw _quotaError();
+      throw err;
+    }
+    (details.items || []).forEach(item => {
+      videos.push({
+        id: item.id,
+        title: item.snippet?.title || 'Unknown Title',
+        durationSeconds: _parseDurationSeconds(item.contentDetails?.duration || '')
+      });
+    });
+  }
   return videos;
 }
 
