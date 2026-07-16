@@ -574,3 +574,17 @@ function _savePlaylistMap(map) {
   props.setProperty('YT_PLAYLIST_MAP', JSON.stringify(map));
 }
 
+// === Web app UI ===
+// Deploy: Deploy > New deployment > Web app (execute as me, access: only myself).
+// Opens index.html; the buttons there call the functions below via google.script.run.
+function doGet() {
+  return HtmlService.createHtmlOutputFromFile('index')
+    .setTitle('YouTube Playlist Sync')
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+}
+
+/** Current config, for read-only display in the UI (no secrets live here). */
+function getConfigForUi() {
+  return CONFIG;
+}
+

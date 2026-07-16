@@ -25,3 +25,9 @@ Google Apps Script version (YouTube Advanced Service)
      - Function: `manageYouTubeSubscriptionsAndPlaylist`
      - Event source: Time-driven → Day timer → pick a daily window.
   6) Save the trigger; the script will run daily.
+
+Optional web UI
+- File: `index.html` (add it to the same Apps Script project).
+- Deploy → New deployment → type "Web app" → execute as **me**, access **Only myself** → Deploy.
+- Open the web app URL to get buttons for "Run daily sync" / "Backfill all", a live channel-state table (with playlist links), and a read-only view of your config. Works on mobile.
+- Note: long backfills can hit Apps Script's ~6 min execution limit; if a run times out, just run it again — progress is saved incrementally, and re-running picks up where it left off.
