@@ -30,6 +30,13 @@ Where things are stored (script properties, per your account — not in code):
   Cleanup un-ledgers the videos still present in a playlist it deletes, so a rebuild can
   restore them while your watched/removed ones stay gone.
 
+Push with clasp (optional — no copy-paste)
+- One-time: `npm i -g @google/clasp`; enable the Apps Script API at https://script.google.com/home/usersettings; `clasp login`.
+- Link this repo to your project: `cp .clasp.json.example .clasp.json` and put your Script ID (Apps Script → Project Settings → IDs) in it. (`.clasp.json` is gitignored — it's just your local link. Alternatively `clasp clone <scriptId>`.)
+- Push code: `clasp push` — syncs `code.gs`, `index.html`, and `appsscript.json` (the manifest already enables the YouTube advanced service and sets the web-app config, so no manual "add service" step).
+- Deploy the web app / daily trigger: `clasp deploy` cuts a new web-app version (equivalent to Manage deployments → New version). The daily time-trigger still has to be created once in the UI (Triggers → add `manageYouTubeSubscriptionsAndPlaylist`).
+- Note: `clasp push` overwrites the project's files with your local copies — make the editor's copy match this repo (delete any leftover `config.gs`, or `clasp push` will remove it for you).
+
 Web UI (group manager + settings)
 - Add `index.html` to the same Apps Script project: File → New → HTML, name it exactly `index`, paste the contents of `index.html`.
 - Deploy → New deployment → type "Web app" → execute as **me**, access **Only myself** → Deploy, then open the web app URL (works on mobile).

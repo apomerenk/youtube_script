@@ -1,0 +1,23 @@
+{
+  "timeZone": "America/Los_Angeles",
+  "runtimeVersion": "V8",
+  "exceptionLogging": "STACKDRIVER",
+  "dependencies": {
+    "enabledAdvancedServices": [
+      {
+        "userSymbol": "YouTube",
+        "serviceId": "youtube",
+        "version": "v3"
+      }
+    ]
+  },
+  "oauthScopes": [
+    "https://www.googleapis.com/auth/youtube",
+    "https://www.googleapis.com/auth/youtube.force-ssl",
+    "https://www.googleapis.com/auth/script.external_request"
+  ],
+  "webapp": {
+    "executeAs": "USER_DEPLOYING",
+    "access": "MYSELF"
+  }
+}

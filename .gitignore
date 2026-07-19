@@ -1,3 +1,7 @@
-# Configuration file with sensitive data
+# Legacy config file with sensitive data (no longer used)
 config.gs
 
+# clasp: local project link (has your scriptId) and credentials
+.clasp.json
+.clasprc.json
+node_modules/
