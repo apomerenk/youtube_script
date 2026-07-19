@@ -23,10 +23,11 @@ function manageYouTubeSubscriptionsAndPlaylist() {
   const pushToPlaylist = CONFIG.pushToPlaylist;
   const includeShorts = CONFIG.includeShorts;
 
-  const output = { added: [], alreadyInPlaylist: [], shorts: [], error: [], playlistsCreated: [] };
+  const output = { added: [], alreadyInPlaylist: [], shorts: [], error: [], playlistsCreated: [], previouslyAdded: [] };
   const channelState = _loadChannelState(); // { [channelId]: lastFetchedIso }
   const playlistMap = _loadPlaylistMap(); // { [channelId]: playlistId }
   const channelToGroup = _buildChannelToGroup(); // { [channelId]: groupName }
+  const everAdded = _loadEverAdded(); // video IDs ever added, so deletions aren't resurrected
   const channels = _getSubscribedChannels();
   let existingPlaylists = null; // Lazy-loaded when we first need to resolve an unmapped channel
   console.log(`Subscribed channels: ${channels.length}`);
@@ -36,7 +37,7 @@ function manageYouTubeSubscriptionsAndPlaylist() {
     return existingPlaylists;
   };
 
-  const ctx = { channelState, playlistMap, pushToPlaylist, includeShorts, daysBack, getExistingPlaylists, channelToGroup, output };
+  const ctx = { channelState, playlistMap, pushToPlaylist, includeShorts, daysBack, getExistingPlaylists, channelToGroup, everAdded, output };
 
   let quotaExceeded = false;
   try {
@@ -66,6 +67,8 @@ function manageYouTubeSubscriptionsAndPlaylist() {
 
   _savePlaylistMap(playlistMap);
   _saveChannelState(channelState);
+  output.added.forEach(v => everAdded.add(v.id));
+  _saveEverAdded(everAdded);
   output.quotaExceeded = quotaExceeded;
   if (output.error.length) {
     throw new Error(`Error adding to playlist: ${JSON.stringify(output.error)}`);
@@ -78,7 +81,7 @@ function manageYouTubeSubscriptionsAndPlaylist() {
  * Process a single channel: resolve/create its playlist, then pull and add new videos.
  * Throws if a mapped playlist can no longer be found so the caller can recover.
  */
-function _processChannel(channelId, { channelState, playlistMap, pushToPlaylist, includeShorts, daysBack, getExistingPlaylists, channelToGroup, output }) {
+function _processChannel(channelId, { channelState, playlistMap, pushToPlaylist, includeShorts, daysBack, getExistingPlaylists, channelToGroup, everAdded, output }) {
   // Resolve (or create) the playlist for this channel (shared if it belongs to a group).
   const playlistId = _resolveChannelPlaylist(channelId, playlistMap, pushToPlaylist, getExistingPlaylists, output, channelToGroup);
   if (!playlistId) {
@@ -109,6 +112,7 @@ function _processChannel(channelId, { channelState, playlistMap, pushToPlaylist,
     playlistId,
     includeShorts,
     addToPlaylist: (id, title) => _addToPlaylist(playlistId, id, title, pushToPlaylist, output),
+    everAdded,
     output
   });
 
@@ -130,9 +134,10 @@ function backfill_old_videos_from_config() {
   const pushToPlaylist = CONFIG.pushToPlaylist;
   const includeShorts = CONFIG.includeShorts;
 
-  const output = { added: [], alreadyInPlaylist: [], shorts: [], error: [], playlistsCreated: [] };
+  const output = { added: [], alreadyInPlaylist: [], shorts: [], error: [], playlistsCreated: [], previouslyAdded: [] };
   const playlistMap = _loadPlaylistMap();
   const channelToGroup = _buildChannelToGroup();
+  const everAdded = _loadEverAdded();
   const channels = _getSubscribedChannels();
   let existingPlaylists = null;
   const getExistingPlaylists = () => {
@@ -141,7 +146,7 @@ function backfill_old_videos_from_config() {
   };
   console.log(`Backfilling ${channels.length} channels, ${monthsBack} months each.`);
 
-  const ctx = { playlistMap, pushToPlaylist, includeShorts, getExistingPlaylists, channelToGroup, output };
+  const ctx = { playlistMap, pushToPlaylist, includeShorts, getExistingPlaylists, channelToGroup, everAdded, output };
 
   let quotaExceeded = false;
   try {
@@ -178,6 +183,8 @@ function backfill_old_videos_from_config() {
   }
 
   _savePlaylistMap(playlistMap);
+  output.added.forEach(v => everAdded.add(v.id));
+  _saveEverAdded(everAdded);
   output.quotaExceeded = quotaExceeded;
   if (output.error.length && !quotaExceeded) {
     throw new Error(`Errors during backfill: ${JSON.stringify(output.error)}`);
@@ -216,6 +223,7 @@ function view_channel_state() {
     totalChannels: channels.length,
     channelsWithState: Object.keys(channelState).length,
     channelsWithPlaylist: Object.keys(playlistMap).length,
+    everAddedCount: _loadEverAdded().size,
     channelDetails: channelInfo,
     rawState: channelState,
     playlistMap
@@ -559,7 +567,7 @@ function _parseDurationSeconds(duration) {
   return totalSec;
 }
 
-function _processVideos({ videos, inPlaylistIds, playlistId, includeShorts, addToPlaylist, output }) {
+function _processVideos({ videos, inPlaylistIds, playlistId, includeShorts, addToPlaylist, everAdded, output }) {
   // Lazy-load playlist IDs only when we have videos to process
   if (inPlaylistIds === null && videos.length > 0) {
     inPlaylistIds = _fetchAllPlaylistItems(playlistId);
@@ -577,6 +585,12 @@ function _processVideos({ videos, inPlaylistIds, playlistId, includeShorts, addT
       return;
     }
 
+    // Previously added and since removed (you watched/deleted it) — don't resurrect it.
+    if (everAdded && everAdded.has(id)) {
+      output.previouslyAdded.push({ title, id });
+      return;
+    }
+
     addToPlaylist(id, title);
   });
 }
@@ -587,7 +601,7 @@ function _processVideos({ videos, inPlaylistIds, playlistId, includeShorts, addT
  * from the playlist itself, so this is idempotent and never touches the incremental cursor.
  * Throws if a mapped playlist can no longer be found so the caller can recover.
  */
-function _backfillChannel(channelId, monthsBack, { playlistMap, pushToPlaylist, includeShorts, getExistingPlaylists, channelToGroup, output }) {
+function _backfillChannel(channelId, monthsBack, { playlistMap, pushToPlaylist, includeShorts, getExistingPlaylists, channelToGroup, everAdded, output }) {
   const playlistId = _resolveChannelPlaylist(channelId, playlistMap, pushToPlaylist, getExistingPlaylists, output, channelToGroup);
   if (!playlistId) {
     console.log(`Skipping backfill for ${channelId}: no playlist available (pushToPlaylist is false).`);
@@ -614,6 +628,7 @@ function _backfillChannel(channelId, monthsBack, { playlistMap, pushToPlaylist, 
     playlistId,
     includeShorts,
     addToPlaylist: (id, title) => _addToPlaylist(playlistId, id, title, pushToPlaylist, output),
+    everAdded,
     output
   });
 }
@@ -670,6 +685,39 @@ function _loadChannelGroups() {
 function _saveChannelGroups(groups) {
   const props = PropertiesService.getUserProperties();
   props.setProperty('YT_CHANNEL_GROUPS', JSON.stringify(groups));
+}
+
+// === Ever-added ledger (video IDs the script has ever added, so deletions stay deleted) ===
+// Sharded across YT_ADDED_<n> properties because a single property value maxes out at ~9 KB.
+const _EVER_ADDED_PREFIX = 'YT_ADDED_';
+const _EVER_ADDED_CHUNK = 500; // ~7 KB per chunk value
+
+function _loadEverAdded() {
+  const all = PropertiesService.getUserProperties().getProperties();
+  const set = new Set();
+  Object.keys(all).forEach(k => {
+    if (k.indexOf(_EVER_ADDED_PREFIX) !== 0) return;
+    try { (JSON.parse(all[k]) || []).forEach(id => set.add(id)); }
+    catch (e) { console.error(`Failed to parse ledger chunk ${k}`, e); }
+  });
+  return set;
+}
+
+function _saveEverAdded(set) {
+  const props = PropertiesService.getUserProperties();
+  const ids = Array.from(set);
+  const nChunks = Math.max(1, Math.ceil(ids.length / _EVER_ADDED_CHUNK));
+  const toSet = {};
+  for (let c = 0; c < nChunks; c++) {
+    toSet[_EVER_ADDED_PREFIX + c] = JSON.stringify(ids.slice(c * _EVER_ADDED_CHUNK, (c + 1) * _EVER_ADDED_CHUNK));
+  }
+  props.setProperties(toSet); // additive: updates chunks 0..nChunks-1, leaves other keys intact
+  // Remove any stale higher-index chunks left over from a larger previous ledger.
+  Object.keys(props.getProperties()).forEach(k => {
+    if (k.indexOf(_EVER_ADDED_PREFIX) !== 0) return;
+    const idx = parseInt(k.slice(_EVER_ADDED_PREFIX.length), 10);
+    if (!isNaN(idx) && idx >= nChunks) props.deleteProperty(k);
+  });
 }
 
 // === Web app UI ===
@@ -785,6 +833,7 @@ function cleanup_playlists() {
     (byTag[p.tag] = byTag[p.tag] || []).push(p);
   });
 
+  const everAdded = _loadEverAdded();
   const kept = {}; // tag -> playlistId
   const deleted = [];
   Object.keys(byTag).forEach(tag => {
@@ -793,7 +842,13 @@ function cleanup_playlists() {
     const survivors = wanted ? list.slice(1) : list; // keep list[0] if wanted, else delete all
     if (wanted) kept[tag] = list[0].id;
     survivors.forEach(p => {
-      if (apply) _deletePlaylist(p.id);
+      if (apply) {
+        // Un-ledger the videos still in this playlist so a rebuild can re-add them.
+        // (Videos you watched + removed aren't here, so they stay blocked.)
+        try { _fetchAllPlaylistItems(p.id).forEach(id => everAdded.delete(id)); }
+        catch (e) { console.error(`Could not read items of ${p.id} before delete: ${e}`); }
+        _deletePlaylist(p.id);
+      }
       deleted.push({ id: p.id, title: p.title, tag, count: p.count });
     });
   });
@@ -804,7 +859,10 @@ function cleanup_playlists() {
     const tag = channelToGroup[cid] ? `group:${channelToGroup[cid]}` : `channel:${cid}`;
     if (kept[tag]) newMap[cid] = kept[tag];
   });
-  if (apply) _savePlaylistMap(newMap);
+  if (apply) {
+    _savePlaylistMap(newMap);
+    _saveEverAdded(everAdded);
+  }
 
   const result = {
     applied: apply,

@@ -22,6 +22,13 @@ Where things are stored (script properties, per your account — not in code):
 - `YT_CHANNEL_GROUPS` — your channel→group assignments from the UI.
 - `YT_PLAYLIST_MAP` — channel/group → playlist id.
 - `YT_CHANNEL_STATE` — the daily incremental cursor per channel.
+- `YT_ADDED_*` — "ever-added" ledger: every video id the script has added, sharded across
+  chunks (script properties cap at 9 KB/value, ~500 KB total). Once a video is added, it's
+  never re-added even if you delete it — so watched-and-removed videos stay gone, through
+  both the daily sync and backfill. (Videos you deleted *before* this ledger existed aren't
+  in it, so a backfill could re-add those once; delete again and they're remembered.)
+  Cleanup un-ledgers the videos still present in a playlist it deletes, so a rebuild can
+  restore them while your watched/removed ones stay gone.
 
 Web UI (group manager + settings)
 - Add `index.html` to the same Apps Script project: File → New → HTML, name it exactly `index`, paste the contents of `index.html`.

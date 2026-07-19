@@ -223,7 +223,7 @@
       google.script.run
         .withSuccessHandler(function(res){
           setBusy(false);
-          var msg = 'Backfill: added ' + ((res.added||[]).length) + ', skipped ' + ((res.shorts||[]).length) + ' shorts, ' + ((res.error||[]).length) + ' errors.';
+          var msg = 'Backfill: added ' + ((res.added||[]).length) + ', skipped ' + ((res.shorts||[]).length) + ' shorts, ' + ((res.previouslyAdded||[]).length) + ' you removed, ' + ((res.error||[]).length) + ' errors.';
           if (res.quotaExceeded) msg += ' ⚠️ Hit the daily API quota — progress saved; run again after it resets (midnight Pacific) to continue.';
           setStatus(msg, res.quotaExceeded ? 'warn' : 'ok');
           load();
